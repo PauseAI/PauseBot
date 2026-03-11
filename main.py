@@ -12,7 +12,6 @@ MAILERSEND_API_KEY = os.getenv('MAILERSEND_API_KEY')
 ONBOARDING_PIPELINE_CHANNEL_ID = 1258824729930891285
 # Map country Role IDs to their respective coordinator email addresses
 COUNTRY_ROLES = {
-    1188719478511513660: "patricio@pauseai.info", # Argentina
     1250075465008549938: "canada@pauseai.info", # Canada
 }
 
