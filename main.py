@@ -2,6 +2,7 @@ import os
 import discord
 import aiohttp
 import asyncio
+import json
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -9,7 +10,11 @@ load_dotenv()
 
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 MAILERSEND_API_KEY = os.getenv('MAILERSEND_API_KEY')
+AIRTABLE_PERSONAL_ACCESS_TOKEN = os.getenv('AIRTABLE_PERSONAL_ACCESS_TOKEN')
+
 ONBOARDING_PIPELINE_CHANNEL_ID = 1174807044990193775
+AIRTABLE_BASE_ID = "appWPTGqZmUcs3NWu"
+AIRTABLE_TABLE_ID = "tblxeqggeTWU7Y8ME"
 # Map country Role IDs to their respective coordinator email addresses
 COUNTRY_ROLES = {
     1250075465008549938: "canada@pauseai.info", # Canada
@@ -19,6 +24,44 @@ intents = discord.Intents.default()
 intents.members = True # Required for on_member_join!
 
 bot = discord.Client(intents=intents)
+
+async def post_to_airtable(member):
+    if not AIRTABLE_PERSONAL_ACCESS_TOKEN:
+        return
+
+    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}"
+    headers = {
+        "Authorization": f"Bearer {AIRTABLE_PERSONAL_ACCESS_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+    joined_at_str = member.joined_at.isoformat() if member.joined_at else ""
+    roles_json = json.dumps([str(role.id) for role in member.roles if role.name != "@everyone"])
+
+    payload = {
+        "records": [
+            {
+                "fields": {
+                    "user.username": member.name,
+                    "nick": member.nick or "",
+                    "user.global_name": getattr(member, 'global_name', member.name) or "",
+                    "joined_at": joined_at_str,
+                    "roles": roles_json
+                }
+            }
+        ]
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=payload) as response:
+                if response.status not in (200, 201):
+                    text = await response.text()
+                    print(f"Error posting user {member.name} to Airtable: {response.status} - {text}")
+                else:
+                    print(f"Successfully posted {member.name} to Airtable!")
+    except Exception as e:
+        print(f"Exception posting user {member.name} to Airtable: {e}")
 
 @bot.event
 async def on_ready():
@@ -39,6 +82,8 @@ async def on_member_join(member):
     if not member:
         print(f"The user {member.name} left the server.")
         return
+        
+    await post_to_airtable(member)
         
     matched_roles = [role for role in member.roles if role.id in COUNTRY_ROLES]
     
@@ -95,6 +140,8 @@ if __name__ == "__main__":
     if not DISCORD_TOKEN or not MAILERSEND_API_KEY:
         print("Error: DISCORD_TOKEN or MAILERSEND_API_KEY is not set in the environment.")
     else:
+        if not AIRTABLE_PERSONAL_ACCESS_TOKEN:
+            print("Warning: Airtable variables are not fully set. The bot will skip posting to Airtable.")
         if not ONBOARDING_PIPELINE_CHANNEL_ID:
             print("Warning: ONBOARDING_PIPELINE_CHANNEL_ID is not set. The bot will not send messages in Discord.")
         bot.run(DISCORD_TOKEN)
