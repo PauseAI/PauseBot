@@ -9,7 +9,7 @@ load_dotenv()
 
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 MAILERSEND_API_KEY = os.getenv('MAILERSEND_API_KEY')
-ONBOARDING_PIPELINE_CHANNEL_ID = 1258824729930891285
+ONBOARDING_PIPELINE_CHANNEL_ID = 1174807044990193775
 # Map country Role IDs to their respective coordinator email addresses
 COUNTRY_ROLES = {
     1250075465008549938: "canada@pauseai.info", # Canada
