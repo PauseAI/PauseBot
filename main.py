@@ -3,6 +3,9 @@ import discord
 import aiohttp
 import asyncio
 import json
+import csv
+import io
+from discord.ext import commands
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -22,8 +25,9 @@ COUNTRY_ROLES = {
 
 intents = discord.Intents.default()
 intents.members = True # Required for on_member_join!
+intents.message_content = True # Required for commands
 
-bot = discord.Client(intents=intents)
+bot = commands.Bot(command_prefix='!', intents=intents)
 
 async def post_to_airtable(member):
     if not AIRTABLE_PERSONAL_ACCESS_TOKEN:
@@ -36,20 +40,23 @@ async def post_to_airtable(member):
     }
 
     joined_at_str = member.joined_at.isoformat() if member.joined_at else ""
-    roles_json = json.dumps([str(role.id) for role in member.roles if role.name != "@everyone"])
+    role_ids = [str(role.id) for role in member.roles if role.name != "@everyone"]
+    role_names = [role.name for role in member.roles if role.name != "@everyone"]
 
     payload = {
         "records": [
             {
                 "fields": {
-                    "user.username": member.name,
+                    "username": member.name,
                     "nick": member.nick or "",
-                    "user.global_name": getattr(member, 'global_name', member.name) or "",
+                    "global_name": getattr(member, 'global_name', member.name) or "",
                     "joined_at": joined_at_str,
-                    "roles": roles_json
+                    "role_ids": role_ids,
+                    "role_names": role_names
                 }
             }
-        ]
+        ],
+        "typecast": True
     }
 
     try:
