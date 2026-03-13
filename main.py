@@ -171,17 +171,16 @@ async def export_members(ctx):
         print(f"PROD MODE: Ignored command from {ctx.author.name} in test/dev server.")
         return
 
+    # Check if user is administrator or has the specific role
+    is_admin = ctx.author.guild_permissions.administrator
+    has_role = False
+    
     if ALLOWED_EXPORT_ROLE_ID != 0:
-        # Check if the user has the specific role
         has_role = any(role.id == ALLOWED_EXPORT_ROLE_ID for role in ctx.author.roles)
-        if not has_role:
-            await ctx.send("❌ You don't have the required role to run this command.")
-            return
-    else:
-        # If no role is configured in .env, fallback to requiring Administrator permissions
-        if not ctx.author.guild_permissions.administrator:
-            await ctx.send("❌ You must be an Administrator, or configure an ALLOWED_EXPORT_ROLE_ID.")
-            return
+
+    if not is_admin and not has_role:
+        await ctx.send("❌ You must be an Administrator or have the required role to run this command.")
+        return
 
     status_msg = await ctx.send("⏳ Generating CSV export of all members... (This might take a moment)")
     
