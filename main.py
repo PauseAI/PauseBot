@@ -17,6 +17,10 @@ AIRTABLE_PERSONAL_ACCESS_TOKEN = os.getenv('AIRTABLE_PERSONAL_ACCESS_TOKEN')
 
 ALLOWED_EXPORT_ROLE_ID = 1409324452545822793
 
+# Developer / Production Environment Mode
+DEVELOPER_MODE = os.getenv('DEVELOPER_MODE', 'false').lower() == 'true'
+PAUSEAI_SERVER_ID = 1100491867675709580
+
 ONBOARDING_PIPELINE_CHANNEL_ID = 1174807044990193775
 AIRTABLE_BASE_ID = "appWPTGqZmUcs3NWu"
 AIRTABLE_TABLE_ID = "tblxeqggeTWU7Y8ME"
@@ -79,6 +83,15 @@ async def on_ready():
 
 @bot.event
 async def on_member_join(member):
+    # Environment Protection:
+    # Dev mode: ignore the public server. Prod mode: ignore all test servers.
+    if DEVELOPER_MODE and member.guild.id == PAUSEAI_SERVER_ID:
+        print(f"DEV MODE: Ignored {member.name} joining public server.")
+        return
+    if not DEVELOPER_MODE and member.guild.id != PAUSEAI_SERVER_ID:
+        print(f"PROD MODE: Ignored {member.name} joining test/dev server.")
+        return
+
     print(f"User {member.name} joined! Waiting some minutes before checking role...")
     
     # Wait for some minutes
@@ -147,6 +160,17 @@ async def on_member_join(member):
 
 @bot.command(name='export_members')
 async def export_members(ctx):
+    if not ctx.guild:
+        return # Ignore Direct Messages
+
+    # Environment Protection:
+    if DEVELOPER_MODE and ctx.guild.id == PAUSEAI_SERVER_ID:
+        print(f"DEV MODE: Ignored command from {ctx.author.name} in public server.")
+        return
+    if not DEVELOPER_MODE and ctx.guild.id != PAUSEAI_SERVER_ID:
+        print(f"PROD MODE: Ignored command from {ctx.author.name} in test/dev server.")
+        return
+
     if ALLOWED_EXPORT_ROLE_ID != 0:
         # Check if the user has the specific role
         has_role = any(role.id == ALLOWED_EXPORT_ROLE_ID for role in ctx.author.roles)
