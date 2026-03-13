@@ -5,7 +5,8 @@ PauseBot is a Discord bot designed to streamline the onboarding pipeline for Pau
 ## Features
 
 - **Automatic Onboarding Emails**: Monitors new users and waits a few minutes. If a user is given a registered country role, an email is automatically sent to the country's coordinator.
-- **Airtable Integration**: Records new member details (username, nick, global name, join date, and role IDs) to an Airtable table.
+- **Airtable Integration**: Records new member details (Discord ID, username, nick, global name, join date, and role IDs) to an Airtable table.
+- **Member Export**: Administrators and authorized users can use the `!export_members` command to download a CSV file containing all members and their roles.
 - **Discord Notification Channel**: Logs successful and failed email attempts directly to a designated Discord channel (e.g., `#onboarding-pipeline`).
 - **Role-based Logic**: Easily map new or existing Discord Role IDs to specific email addresses.
 
