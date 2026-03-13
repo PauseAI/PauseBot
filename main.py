@@ -53,6 +53,7 @@ async def post_to_airtable(member):
         "records": [
             {
                 "fields": {
+                    "id": member.id,
                     "username": member.name,
                     "nick": member.nick or "",
                     "global_name": getattr(member, 'global_name', member.name) or "",
@@ -188,7 +189,7 @@ async def export_members(ctx):
     writer = csv.writer(csv_buffer)
     
     # Write CSV Header
-    writer.writerow(['username', 'nick', 'global_name', 'joined_at', 'role_ids', 'role_names'])
+    writer.writerow(['id', 'username', 'nick', 'global_name', 'joined_at', 'role_ids', 'role_names'])
     
     # Write each member's info to the CSV
     for member in ctx.guild.members:
@@ -197,6 +198,7 @@ async def export_members(ctx):
         role_names_str = ", ".join([role.name for role in member.roles if role.name != "@everyone"])
         
         writer.writerow([
+            member.id,
             member.name,
             member.nick or "",
             getattr(member, 'global_name', member.name) or "",
