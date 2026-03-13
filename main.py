@@ -7,13 +7,15 @@ import csv
 import io
 from discord.ext import commands
 from dotenv import load_dotenv
-
+from aiohttp import web
 # Load environment variables from .env file
 load_dotenv()
 
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 MAILERSEND_API_KEY = os.getenv('MAILERSEND_API_KEY')
 AIRTABLE_PERSONAL_ACCESS_TOKEN = os.getenv('AIRTABLE_PERSONAL_ACCESS_TOKEN')
+WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')
+PORT = int(os.getenv('PORT', 8080))
 
 ALLOWED_EXPORT_ROLE_ID = 1409324452545822793
 
@@ -34,6 +36,66 @@ intents.members = True # Required for on_member_join!
 intents.message_content = True # Required for commands
 
 bot = commands.Bot(command_prefix='!', intents=intents)
+
+async def handle_webhook(request):
+    auth_header = request.headers.get("Authorization")
+    if not WEBHOOK_SECRET:
+        return web.json_response({"error": "Webhook secret not configured in the bot"}, status=500)
+        
+    if not auth_header or auth_header != f"Bearer {WEBHOOK_SECRET}":
+        return web.json_response({"error": "Unauthorized"}, status=401)
+        
+    try:
+        data = await request.json()
+        user_id = data.get("user_id")
+        role_id = data.get("role_id")
+        
+        if not user_id or not role_id:
+            return web.json_response({"error": "Missing user_id or role_id"}, status=400)
+            
+        guild = bot.get_guild(PAUSEAI_SERVER_ID)
+        if not guild:
+            return web.json_response({"error": "Guild not found"}, status=500)
+            
+        member = guild.get_member(int(user_id))
+        if not member:
+            try:
+                member = await guild.fetch_member(int(user_id))
+            except discord.NotFound:
+                return web.json_response({"error": "Member not found in guild"}, status=404)
+            
+        role = guild.get_role(int(role_id))
+        if not role:
+            return web.json_response({"error": f"Role {role_id} not found in guild"}, status=404)
+            
+        await member.add_roles(role)
+        print(f"WEBHOOK: Added role '{role.name}' to {member.name}")
+        return web.json_response({"success": True, "message": f"Added role {role.name} to {member.name}"})
+        
+    except Exception as e:
+        print(f"WEBHOOK ERROR: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_post('/webhook/add_role', handle_webhook)
+    
+    # Simple healthcheck for the deployment platform
+    async def healthcheck(request):
+        return web.json_response({"status": "ok", "bot_user": str(bot.user) if bot.user else "Starting..."})
+    app.router.add_get('/', healthcheck)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    print(f"Web server started on port {PORT}")
+
+async def setup_hook():
+    bot.loop.create_task(start_web_server())
+
+bot.setup_hook = setup_hook
+
 
 async def post_to_airtable(member):
     if not AIRTABLE_PERSONAL_ACCESS_TOKEN:

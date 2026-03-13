@@ -6,6 +6,7 @@ PauseBot is a Discord bot designed to streamline the onboarding pipeline for Pau
 
 - **Automatic Onboarding Emails**: Monitors new users and waits a few minutes. If a user is given a registered country role, an email is automatically sent to the country's coordinator.
 - **Airtable Integration**: Records new member details (Discord ID, username, nick, global name, join date, and role IDs) to an Airtable table.
+- **Airtable/Webhook to Discord Syncing**: Exposes a secure REST endpoint (`/webhook/add_role`) natively powered by a web server that accepts POST requests securely authenticated with a `WEBHOOK_SECRET`. Allows Airtable automations to seamlessly assign Discord roles to members based on Airtable state updates.
 - **Member Export**: Administrators and authorized users can use the `!export_members` command to download a CSV file containing all members and their roles.
 - **Discord Notification Channel**: Logs successful and failed email attempts directly to a designated Discord channel (e.g., `#onboarding-pipeline`).
 - **Role-based Logic**: Easily map new or existing Discord Role IDs to specific email addresses.
@@ -50,6 +51,8 @@ PauseBot is a Discord bot designed to streamline the onboarding pipeline for Pau
    - `DISCORD_TOKEN`: Your Discord bot token.
    - `MAILERSEND_API_KEY`: Your MailerSend API Key.
    - `AIRTABLE_PERSONAL_ACCESS_TOKEN`: The PAT from your Airtable account.
+   - `WEBHOOK_SECRET`: A secret string of your choosing. Required if using the webhooks for assigning roles.
+   - `PORT`: (Optional) Custom port for the web server to run over (defaults to 8080).
 
 5. **Configure Roles and Channels (in `main.py`):**
    - Update `AIRTABLE_BASE_ID` with your target Airtable base's ID.
