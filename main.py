@@ -15,6 +15,8 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 MAILERSEND_API_KEY = os.getenv('MAILERSEND_API_KEY')
 AIRTABLE_PERSONAL_ACCESS_TOKEN = os.getenv('AIRTABLE_PERSONAL_ACCESS_TOKEN')
 
+ALLOWED_EXPORT_ROLE_ID = 1409324452545822793
+
 ONBOARDING_PIPELINE_CHANNEL_ID = 1174807044990193775
 AIRTABLE_BASE_ID = "appWPTGqZmUcs3NWu"
 AIRTABLE_TABLE_ID = "tblxeqggeTWU7Y8ME"
@@ -142,6 +144,49 @@ async def on_member_join(member):
             print(f"Error sending email to {target_email}: {e}")
             if channel:
                 await channel.send(f"Failed to send email to `{target_email}` for **{member.name}**. Please check the bot logs.")
+
+@bot.command(name='export_members')
+async def export_members(ctx):
+    if ALLOWED_EXPORT_ROLE_ID != 0:
+        # Check if the user has the specific role
+        has_role = any(role.id == ALLOWED_EXPORT_ROLE_ID for role in ctx.author.roles)
+        if not has_role:
+            await ctx.send("❌ You don't have the required role to run this command.")
+            return
+    else:
+        # If no role is configured in .env, fallback to requiring Administrator permissions
+        if not ctx.author.guild_permissions.administrator:
+            await ctx.send("❌ You must be an Administrator, or configure an ALLOWED_EXPORT_ROLE_ID.")
+            return
+
+    status_msg = await ctx.send("⏳ Generating CSV export of all members... (This might take a moment)")
+    
+    csv_buffer = io.StringIO()
+    writer = csv.writer(csv_buffer)
+    
+    # Write CSV Header
+    writer.writerow(['username', 'nick', 'global_name', 'joined_at', 'role_ids', 'role_names'])
+    
+    # Write each member's info to the CSV
+    for member in ctx.guild.members:
+        joined_at_str = member.joined_at.isoformat() if member.joined_at else ""
+        role_ids_str = ", ".join([str(role.id) for role in member.roles if role.name != "@everyone"])
+        role_names_str = ", ".join([role.name for role in member.roles if role.name != "@everyone"])
+        
+        writer.writerow([
+            member.name,
+            member.nick or "",
+            getattr(member, 'global_name', member.name) or "",
+            joined_at_str,
+            role_ids_str,
+            role_names_str
+        ])
+        
+    csv_buffer.seek(0)
+    file = discord.File(fp=csv_buffer, filename="members_export.csv")
+    
+    await status_msg.delete()
+    await ctx.send(content="✅ Here is the export of all members:", file=file)
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN or not MAILERSEND_API_KEY:
