@@ -31,6 +31,7 @@ AIRTABLE_TABLE_ID = "tblxeqggeTWU7Y8ME"
 # Map country Role IDs to their respective coordinator email addresses
 COUNTRY_ROLES = {
     1250075465008549938: "canada@pauseai.info", # Canada
+    1188719399117541396: "germany@pause-ai.info", # Germany
 }
 
 intents = discord.Intents.default()
