@@ -1,4 +1,6 @@
 import os
+import urllib.parse
+import datetime
 import discord
 import aiohttp
 import asyncio
@@ -97,9 +99,40 @@ async def setup_hook():
 bot.setup_hook = setup_hook
 
 
-async def post_to_airtable(member):
+async def find_airtable_record(discord_id):
+    if not AIRTABLE_PERSONAL_ACCESS_TOKEN:
+        return None, None
+        
+    formula = f"{{id}}='{discord_id}'"
+    encoded_formula = urllib.parse.quote(formula)
+    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}?filterByFormula={encoded_formula}"
+    headers = {
+        "Authorization": f"Bearer {AIRTABLE_PERSONAL_ACCESS_TOKEN}"
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    records = data.get("records", [])
+                    if records:
+                        return records[0].get("id"), records[0].get("fields", {})
+    except Exception as e:
+        print(f"Error checking Airtable for {discord_id}: {e}")
+        
+    return None, None
+
+
+async def sync_member_to_airtable(member):
     if not AIRTABLE_PERSONAL_ACCESS_TOKEN:
         return
+
+    record_id, fields = await find_airtable_record(str(member.id))
+    
+    joined_at_str = member.joined_at.isoformat() if member.joined_at else ""
+    role_ids = [str(role.id) for role in member.roles if role.name != "@everyone"]
+    role_names = [role.name for role in member.roles if role.name != "@everyone"]
 
     url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}"
     headers = {
@@ -107,37 +140,98 @@ async def post_to_airtable(member):
         "Content-Type": "application/json"
     }
 
-    joined_at_str = member.joined_at.isoformat() if member.joined_at else ""
-    role_ids = [str(role.id) for role in member.roles if role.name != "@everyone"]
-    role_names = [role.name for role in member.roles if role.name != "@everyone"]
+    if record_id:
+        roles_to_assign = []
+        saved_role_ids = fields.get("role_ids", "")
+        saved_role_names = fields.get("role_names", "")
+        
+        if isinstance(saved_role_ids, str):
+            saved_ids_list = [r.strip() for r in saved_role_ids.split(",") if r.strip()]
+        else:
+            saved_ids_list = saved_role_ids or []
+            
+        if isinstance(saved_role_names, str):
+            saved_names_list = [r.strip() for r in saved_role_names.split(",") if r.strip()]
+        else:
+            saved_names_list = saved_role_names or []
 
-    payload = {
-        "records": [
-            {
-                "fields": {
-                    "id": str(member.id),
-                    "username": member.name,
-                    "nick": member.nick or "",
-                    "global_name": getattr(member, 'global_name', member.name) or "",
-                    "joined_at": joined_at_str,
-                    "role_ids": role_ids,
-                    "role_names": role_names
+        for r_id in saved_ids_list:
+            if r_id.isdigit():
+                role = member.guild.get_role(int(r_id))
+                if role and role not in roles_to_assign:
+                    roles_to_assign.append(role)
+                    
+        for r_name in saved_names_list:
+            if not any(r.name == r_name for r in roles_to_assign):
+                role = discord.utils.get(member.guild.roles, name=r_name)
+                if role and role not in roles_to_assign:
+                    roles_to_assign.append(role)
+        
+        roles_to_assign = [r for r in roles_to_assign if not r.is_default() and not r.is_bot_managed()]
+
+        if roles_to_assign:
+            try:
+                await member.add_roles(*roles_to_assign)
+                print(f"Restored {len(roles_to_assign)} roles for returning user {member.name}.")
+                all_current_roles = list(set(member.roles) | set(roles_to_assign))
+                role_ids = [str(r.id) for r in all_current_roles if r.name != "@everyone"]
+                role_names = [r.name for r in all_current_roles if r.name != "@everyone"]
+            except Exception as e:
+                print(f"Error restoring roles for {member.name}: {e}")
+
+        patch_url = f"{url}/{record_id}"
+        payload = {
+            "fields": {
+                "username": member.name,
+                "nick": member.nick or "",
+                "global_name": getattr(member, 'global_name', member.name) or "",
+                "joined_at": joined_at_str,
+                "role_ids": role_ids,
+                "role_names": role_names,
+                "left_at": None
+            },
+            "typecast": True
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.patch(patch_url, headers=headers, json=payload) as response:
+                    if response.status == 200:
+                        print(f"Successfully updated returning user {member.name} in Airtable!")
+                    else:
+                        text = await response.text()
+                        print(f"Error updating user {member.name}: {response.status} - {text}")
+        except Exception as e:
+            print(f"Exception updating user {member.name}: {e}")
+
+    else:
+        payload = {
+            "records": [
+                {
+                    "fields": {
+                        "id": str(member.id),
+                        "username": member.name,
+                        "nick": member.nick or "",
+                        "global_name": getattr(member, 'global_name', member.name) or "",
+                        "joined_at": joined_at_str,
+                        "role_ids": role_ids,
+                        "role_names": role_names,
+                        "left_at": None
+                    }
                 }
-            }
-        ],
-        "typecast": True
-    }
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload) as response:
-                if response.status not in (200, 201):
-                    text = await response.text()
-                    print(f"Error posting user {member.name} to Airtable: {response.status} - {text}")
-                else:
-                    print(f"Successfully posted {member.name} to Airtable!")
-    except Exception as e:
-        print(f"Exception posting user {member.name} to Airtable: {e}")
+            ],
+            "typecast": True
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=payload) as response:
+                    if response.status in (200, 201):
+                        print(f"Successfully posted new user {member.name} to Airtable!")
+                    else:
+                        text = await response.text()
+                        print(f"Error posting user {member.name}: {response.status} - {text}")
+        except Exception as e:
+            print(f"Exception posting user {member.name}: {e}")
 
 @bot.event
 async def on_ready():
@@ -168,7 +262,7 @@ async def on_member_join(member):
         print(f"The user {member.name} left the server.")
         return
         
-    await post_to_airtable(member)
+    await sync_member_to_airtable(member)
         
     matched_roles = [role for role in member.roles if role.id in COUNTRY_ROLES]
     
@@ -220,6 +314,46 @@ async def on_member_join(member):
             print(f"Error sending email to {target_email}: {e}")
             if channel:
                 await channel.send(f"Failed to send email to `{target_email}` for **{member.name}**. Please check the bot logs.")
+
+@bot.event
+async def on_member_remove(member):
+    if DEVELOPER_MODE and member.guild.id == PAUSEAI_SERVER_ID:
+        return
+    if not DEVELOPER_MODE and member.guild.id != PAUSEAI_SERVER_ID:
+        return
+        
+    print(f"User {member.name} left the server!")
+    
+    if not AIRTABLE_PERSONAL_ACCESS_TOKEN:
+        return
+        
+    record_id, _ = await find_airtable_record(str(member.id))
+    if record_id:
+        url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}/{record_id}"
+        headers = {
+            "Authorization": f"Bearer {AIRTABLE_PERSONAL_ACCESS_TOKEN}",
+            "Content-Type": "application/json"
+        }
+        
+        left_at_str = datetime.datetime.utcnow().isoformat() + "Z"
+        
+        payload = {
+            "fields": {
+                "left_at": left_at_str
+            },
+            "typecast": True
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.patch(url, headers=headers, json=payload) as response:
+                    if response.status == 200:
+                        print(f"Successfully marked {member.name} as left in Airtable!")
+                    else:
+                        text = await response.text()
+                        print(f"Error marking {member.name} as left: {response.status} - {text}")
+        except Exception as e:
+            print(f"Exception marking {member.name} as left: {e}")
 
 @bot.command(name='export_members')
 async def export_members(ctx):
