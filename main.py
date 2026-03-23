@@ -4,7 +4,6 @@ import datetime
 import discord
 import aiohttp
 import asyncio
-import json
 import csv
 import io
 from discord.ext import commands
@@ -39,6 +38,9 @@ intents.members = True # Required for on_member_join!
 intents.message_content = True # Required for commands
 
 bot = commands.Bot(command_prefix='!', intents=intents)
+
+# Shared aiohttp session — created once on startup, reused for all HTTP calls
+http_session: aiohttp.ClientSession | None = None
 
 async def handle_webhook(request):
     auth_header = request.headers.get("Authorization")
@@ -95,6 +97,8 @@ async def start_web_server():
     print(f"Web server started on port {PORT}")
 
 async def setup_hook():
+    global http_session
+    http_session = aiohttp.ClientSession()
     bot.loop.create_task(start_web_server())
 
 bot.setup_hook = setup_hook
@@ -112,13 +116,12 @@ async def find_airtable_record(discord_id):
     }
     
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    records = data.get("records", [])
-                    if records:
-                        return records[0].get("id"), records[0].get("fields", {})
+        async with http_session.get(url, headers=headers) as response:
+            if response.status == 200:
+                data = await response.json()
+                records = data.get("records", [])
+                if records:
+                    return records[0].get("id"), records[0].get("fields", {})
     except Exception as e:
         print(f"Error checking Airtable for {discord_id}: {e}")
         
@@ -195,13 +198,12 @@ async def sync_member_to_airtable(member):
         }
         
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.patch(patch_url, headers=headers, json=payload) as response:
-                    if response.status == 200:
-                        print(f"Successfully updated returning user {member.name} in Airtable!")
-                    else:
-                        text = await response.text()
-                        print(f"Error updating user {member.name}: {response.status} - {text}")
+            async with http_session.patch(patch_url, headers=headers, json=payload) as response:
+                if response.status == 200:
+                    print(f"Successfully updated returning user {member.name} in Airtable!")
+                else:
+                    text = await response.text()
+                    print(f"Error updating user {member.name}: {response.status} - {text}")
         except Exception as e:
             print(f"Exception updating user {member.name}: {e}")
 
@@ -224,13 +226,12 @@ async def sync_member_to_airtable(member):
             "typecast": True
         }
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, json=payload) as response:
-                    if response.status in (200, 201):
-                        print(f"Successfully posted new user {member.name} to Airtable!")
-                    else:
-                        text = await response.text()
-                        print(f"Error posting user {member.name}: {response.status} - {text}")
+            async with http_session.post(url, headers=headers, json=payload) as response:
+                if response.status in (200, 201):
+                    print(f"Successfully posted new user {member.name} to Airtable!")
+                else:
+                    text = await response.text()
+                    print(f"Error posting user {member.name}: {response.status} - {text}")
         except Exception as e:
             print(f"Exception posting user {member.name}: {e}")
 
@@ -239,50 +240,39 @@ async def on_ready():
     print(f'Ready! Logged in as {bot.user}')
     print('Listening for users joining...')
 
-@bot.event
-async def on_member_join(member):
-    # Environment Protection:
-    # Dev mode: ignore the public server. Prod mode: ignore all test servers.
-    if DEVELOPER_MODE and member.guild.id == PAUSEAI_SERVER_ID:
-        print(f"DEV MODE: Ignored {member.name} joining public server.")
-        return
-    if not DEVELOPER_MODE and member.guild.id != PAUSEAI_SERVER_ID:
-        print(f"PROD MODE: Ignored {member.name} joining test/dev server.")
+async def _handle_member_join(member):
+    """Background task: waits, then syncs the new member and sends coordinator emails."""
+    member_name = member.name  # capture before the sleep in case member object changes
+    guild = member.guild
+
+    # Wait for the member to potentially receive roles via other bots/flows
+    await asyncio.sleep(180)
+
+    # Re-fetch the member in case they left or their roles changed during the wait
+    member = guild.get_member(member.id)
+    if not member:
+        print(f"User {member_name} left the server before the join check completed.")
         return
 
-    print(f"User {member.name} joined! Waiting some minutes before checking role...")
-    
-    # Wait for some minutes
-    await asyncio.sleep(180)
-    
-    # In case they were kicked/left or their roles changed, we should re-fetch the member object
-    guild = member.guild
-    member = guild.get_member(member.id)
-    
-    if not member:
-        print(f"The user {member.name} left the server.")
-        return
-        
     await sync_member_to_airtable(member)
-        
+
     matched_roles = [role for role in member.roles if role.id in COUNTRY_ROLES]
-    
     if not matched_roles:
         return
-        
+
     channel = bot.get_channel(int(ONBOARDING_PIPELINE_CHANNEL_ID)) if ONBOARDING_PIPELINE_CHANNEL_ID else None
-    
+
     url = "https://api.mailersend.com/v1/email"
     headers = {
         "Authorization": f"Bearer {MAILERSEND_API_KEY}",
         "Content-Type": "application/json"
     }
-    
+
     # Iterate over all matched country roles and send an email to each coordinator
     for role in matched_roles:
         target_email = COUNTRY_ROLES[role.id]
         print(f"User {member.name} has the {role.name} role! Sending email to {target_email}...")
-        
+
         payload = {
             "from": {
                 "email": "info@pauseai.info",
@@ -300,21 +290,36 @@ async def on_member_join(member):
         }
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, json=payload) as response:
-                    if response.status in (200, 202):
-                        print(f"Email sent successfully to {target_email}!")
-                        if channel:
-                            await channel.send(f"An email was sent successfully to `{target_email}` for the new member: **{member.name}** ({role.name})")
-                    else:
-                        response_text = await response.text()
-                        print(f"Error from MailerSend for {target_email}: {response.status} - {response_text}")
-                        if channel:
-                            await channel.send(f"Failed to send email to `{target_email}` for **{member.name}**. API returned status: {response.status}")
+            async with http_session.post(url, headers=headers, json=payload) as response:
+                if response.status in (200, 202):
+                    print(f"Email sent successfully to {target_email}!")
+                    if channel:
+                        await channel.send(f"An email was sent successfully to `{target_email}` for the new member: **{member.name}** ({role.name})")
+                else:
+                    response_text = await response.text()
+                    print(f"Error from MailerSend for {target_email}: {response.status} - {response_text}")
+                    if channel:
+                        await channel.send(f"Failed to send email to `{target_email}` for **{member.name}**. API returned status: {response.status}")
         except Exception as e:
             print(f"Error sending email to {target_email}: {e}")
             if channel:
                 await channel.send(f"Failed to send email to `{target_email}` for **{member.name}**. Please check the bot logs.")
+
+@bot.event
+async def on_member_join(member):
+    # Environment Protection:
+    # Dev mode: ignore the public server. Prod mode: ignore all test servers.
+    if DEVELOPER_MODE and member.guild.id == PAUSEAI_SERVER_ID:
+        print(f"DEV MODE: Ignored {member.name} joining public server.")
+        return
+    if not DEVELOPER_MODE and member.guild.id != PAUSEAI_SERVER_ID:
+        print(f"PROD MODE: Ignored {member.name} joining test/dev server.")
+        return
+
+    print(f"User {member.name} joined! Waiting some minutes before checking role...")
+    # Offload the long-running work to a background task so the event handler
+    # returns immediately and does not hold up the gateway dispatch loop.
+    asyncio.create_task(_handle_member_join(member))
 
 @bot.event
 async def on_member_remove(member):
@@ -336,23 +341,22 @@ async def on_member_remove(member):
             "Content-Type": "application/json"
         }
         
-        left_at_str = datetime.datetime.utcnow().isoformat() + "Z"
-        
+        left_at_str = datetime.datetime.now(datetime.UTC).isoformat()
+
         payload = {
             "fields": {
                 "left_at": left_at_str
             },
             "typecast": True
         }
-        
+
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.patch(url, headers=headers, json=payload) as response:
-                    if response.status == 200:
-                        print(f"Successfully marked {member.name} as left in Airtable!")
-                    else:
-                        text = await response.text()
-                        print(f"Error marking {member.name} as left: {response.status} - {text}")
+            async with http_session.patch(url, headers=headers, json=payload) as response:
+                if response.status == 200:
+                    print(f"Successfully marked {member.name} as left in Airtable!")
+                else:
+                    text = await response.text()
+                    print(f"Error marking {member.name} as left: {response.status} - {text}")
         except Exception as e:
             print(f"Exception marking {member.name} as left: {e}")
 
