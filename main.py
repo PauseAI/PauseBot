@@ -414,6 +414,58 @@ async def export_members(ctx):
     await status_msg.delete()
     await ctx.send(content="✅ Here is the export of all members:", file=file)
 
+@bot.command(name='sync_airtable')
+async def sync_airtable(ctx, member: discord.Member):
+    if not ctx.guild:
+        return
+
+    is_admin = ctx.author.guild_permissions.administrator
+    has_role = False
+    if ALLOWED_EXPORT_ROLE_ID != 0:
+        has_role = any(role.id == ALLOWED_EXPORT_ROLE_ID for role in ctx.author.roles)
+
+    if not is_admin and not has_role:
+        await ctx.send("❌ You must be an Administrator or have the required role to run this command.")
+        return
+
+    status_msg = await ctx.send(f"⏳ Syncing {member.name} to Airtable...")
+    try:
+        await sync_member_to_airtable(member)
+        await status_msg.edit(content=f"✅ Successfully synced {member.name} to Airtable!")
+    except Exception as e:
+        await status_msg.edit(content=f"❌ Failed to sync {member.name}: {e}")
+
+@bot.command(name='sync_recent')
+async def sync_recent(ctx, hours: float = 24.0):
+    if not ctx.guild:
+        return
+
+    is_admin = ctx.author.guild_permissions.administrator
+    has_role = False
+    if ALLOWED_EXPORT_ROLE_ID != 0:
+        has_role = any(role.id == ALLOWED_EXPORT_ROLE_ID for role in ctx.author.roles)
+
+    if not is_admin and not has_role:
+        await ctx.send("❌ You must be an Administrator or have the required role to run this command.")
+        return
+
+    status_msg = await ctx.send(f"⏳ Checking for members who joined in the last {hours} hours...")
+    
+    now = datetime.datetime.now(datetime.UTC)
+    delta = datetime.timedelta(hours=hours)
+    
+    synced_count = 0
+    for member in ctx.guild.members:
+        if member.joined_at and (now - member.joined_at) <= delta:
+            try:
+                await sync_member_to_airtable(member)
+                synced_count += 1
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                print(f"Error syncing {member.name} in sync_recent: {e}")
+                
+    await status_msg.edit(content=f"✅ Finished! Synced {synced_count} recent members to Airtable.")
+
 if __name__ == "__main__":
     if not DISCORD_TOKEN or not MAILERSEND_API_KEY:
         print("Error: DISCORD_TOKEN or MAILERSEND_API_KEY is not set in the environment.")
