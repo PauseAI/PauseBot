@@ -27,10 +27,35 @@ PAUSEAI_SERVER_ID = 1100491867675709580
 ONBOARDING_PIPELINE_CHANNEL_ID = 1174807044990193775
 AIRTABLE_BASE_ID = "appWPTGqZmUcs3NWu"
 AIRTABLE_TABLE_ID = "tblxeqggeTWU7Y8ME"
-# Map country Role IDs to their respective coordinator email addresses
-COUNTRY_ROLES = {
-    1250075465008549938: "canada@pauseai.info", # Canada
-    1188719399117541396: "germany@pause-ai.info", # Germany
+GENERAL_DM = """Welcome to the PauseAI Global Discord, {user}!
+We're delighted to have you join us. Please make sure you have also signed up via our Join form [here](https://pauseai.info/join). 
+ 
+Feel free to introduce yourself in the <#1101804381755686972> – it's always nice to know who's joining us. 
+ 
+If you’re looking for an immediate action to take, check out [MicroCommit](https://microcommit.io/onboarding?org=135fcd8d-8116-44af-b885-14df992f9a8c), a platform where you can follow us and get weekly small tasks anyone can help with!
+ 
+We also conduct welcome calls where you can meet others who are joining PauseAI, you can check them out [here](https://luma.com/PauseAI?tag=welcome).
+ 
+Lastly, you can find others near you who are organizing in communities: <#1171376873721298984>"""
+
+# Unified definition for Countries (MailerSend Emails + YAGPDB Onboarder Pings)
+COUNTRY_DATA = {
+    1188719374941560925: {"name": "UK", "onboarders": [335365981276995594, 925051691798233089], "msg": "", "noDM": True, "email": None},
+    1188717849980702781: {"name": "US", "onboarders": [732773275238793266], "msg": "", "email": None},
+    1188719426552479824: {"name": "France", "onboarders": [456868543225528331], "msg": "", "email": None},
+    1188719399117541396: {"name": "Germany", "onboarders": [775477651703726092], "msg": "", "email": "germany@pause-ai.info"},
+    1188719443954643035: {"name": "Netherlands", "onboarders": [1363472971141746718], "msg": "", "email": None},
+    1188719729662234624: {"name": "Italy", "onboarders": [1217966947057139762], "msg": "", "email": None},
+    1188720344882753566: {"name": "Spain", "onboarders": [758415679526797342], "msg": "", "email": None},
+    1250075465008549938: {"name": "Canada", "onboarders": [719546151593967616, 800445163520524311], "msg": "", "email": "canada@pauseai.info"},
+    1188719833555161089: {"name": "Nigeria", "onboarders": [1185890162027278446], "msg": "", "email": None},
+    1188720325530243142: {"name": "Romania", "onboarders": [521285222990348290], "msg": "", "email": None},
+    1188719500439343135: {"name": "Australia", "onboarders": [345795697792122891], "msg": "", "email": None},
+    1188719860096712756: {"name": "Poland", "onboarders": [1405864336873881644], "msg": "", "email": None},
+    1429216643459842129: {"name": "Serbia", "onboarders": [1060642083347632182], "msg": "", "email": None},
+    1188719899401523330: {"name": "Sweden", "onboarders": [269204846572339211], "msg": "", "email": None},
+    1188719610384633918: {"name": "Czech", "onboarders": [971680888960208926], "msg": "", "email": None},
+    1256260218162122843: {"name": "Kenya", "onboarders": [853298855310000148], "msg": "", "email": None},
 }
 
 intents = discord.Intents.default()
@@ -279,6 +304,34 @@ async def _handle_member_join(member):
         return
     await sync_member_to_airtable(member)
 
+async def send_delayed_welcome_dm(member):
+    """Wait temporarily after joining/screening to give the user time to settle, then send a DM."""
+    await asyncio.sleep(180) # Wait 3 minutes
+
+    guild = member.guild
+    member = guild.get_member(member.id)
+    if not member:
+        return
+
+    # Check which country roles they picked during the 3 minutes
+    matched_countries = [role.id for role in member.roles if role.id in COUNTRY_DATA]
+    
+    msg_to_send = GENERAL_DM
+    no_dm = False
+
+    if matched_countries:
+        country_info = COUNTRY_DATA[matched_countries[0]]
+        if country_info.get("noDM"):
+            no_dm = True
+        elif country_info.get("msg"):
+            msg_to_send = country_info["msg"]
+
+    if not no_dm:
+        try:
+            await member.send(msg_to_send.format(user=member.name))
+        except discord.Forbidden:
+            print(f"Could not DM {member.name} - they might have DMs disabled.")
+
 @bot.event
 async def on_member_join(member):
     if DEVELOPER_MODE and member.guild.id == PAUSEAI_SERVER_ID:
@@ -291,6 +344,10 @@ async def on_member_join(member):
     print(f"User {member.name} joined! Preparing initial Airtable sync...")
     asyncio.create_task(_handle_member_join(member))
 
+    # If they are NOT pending (meaning no Rules Screening), send Welcome DM on a timer
+    if not getattr(member, 'pending', False):
+        asyncio.create_task(send_delayed_welcome_dm(member))
+
 @bot.event
 async def on_member_update(before, after):
     if DEVELOPER_MODE and after.guild.id == PAUSEAI_SERVER_ID:
@@ -298,46 +355,56 @@ async def on_member_update(before, after):
     if not DEVELOPER_MODE and after.guild.id != PAUSEAI_SERVER_ID:
         return
 
+    # User just passed rules screening! Send delayed DM.
+    if getattr(before, 'pending', False) and not getattr(after, 'pending', False):
+        asyncio.create_task(send_delayed_welcome_dm(after))
+
     # Check if any new roles were added
     new_roles = [role for role in after.roles if role not in before.roles]
-    added_country_roles = [role for role in new_roles if role.id in COUNTRY_ROLES]
+    added_country_roles = [role for role in new_roles if role.id in COUNTRY_DATA]
     
     if not added_country_roles:
         return
 
-    print(f"User {after.name} received country role(s)! Updating Airtable and emailing coordinators.")
+    print(f"User {after.name} received country role(s)! Updating Airtable and notifying coordinators.")
     await sync_member_to_airtable(after)
 
     channel = bot.get_channel(int(ONBOARDING_PIPELINE_CHANNEL_ID)) if ONBOARDING_PIPELINE_CHANNEL_ID else None
-    url = "https://api.mailersend.com/v1/email"
-    headers = {
-        "Authorization": f"Bearer {MAILERSEND_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
+    
     for role in added_country_roles:
-        target_email = COUNTRY_ROLES[role.id]
-        payload = {
-            "from": {"email": "info@pauseai.info", "name": "PauseAI Info"},
-            "to": [{"email": target_email, "name": f"{role.name} Onboarder"}],
-            "subject": f"{after.name} has joined PauseAI Discord",
-            "text": f"A new user just joined the Discord server and received the {role.name} role!\n\nUser: {after.name}",
-            "html": f"<strong>A new user just joined the Discord server and received the {role.name} role!</strong><br><br>User: {after.name}"
-        }
+        info = COUNTRY_DATA[role.id]
+        
+        # 1. Ping Staff in Onboarding Channel
+        if channel and info.get("onboarders"):
+            onboarder_mentions = " ".join([f"<@{uid}>" for uid in info["onboarders"]])
+            ping_msg = f"{onboarder_mentions} : {after.mention} has joined from {info['name']}!"
+            await channel.send(ping_msg)
+            
+        # 2. Send MailerSend Email (if email exists)
+        target_email = info.get("email")
+        if target_email:
+            url = "https://api.mailersend.com/v1/email"
+            headers = {
+                "Authorization": f"Bearer {MAILERSEND_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "from": {"email": "info@pauseai.info", "name": "PauseAI Info"},
+                "to": [{"email": target_email, "name": f"{info['name']} Onboarder"}],
+                "subject": f"{after.name} has joined PauseAI Discord",
+                "text": f"A new user just joined the Discord server and received the {info['name']} role!\n\nUser: {after.name}",
+                "html": f"<strong>A new user just joined the Discord server and received the {info['name']} role!</strong><br><br>User: {after.name}"
+            }
 
-        try:
-            async with http_session.post(url, headers=headers, json=payload) as response:
-                if response.status in (200, 202):
-                    print(f"Email sent successfully to {target_email}!")
-                    if channel:
-                        await channel.send(f"An email was sent successfully to `{target_email}` for user: **{after.name}** ({role.name})")
-                else:
-                    response_text = await response.text()
-                    print(f"Error from MailerSend for {target_email}: {response.status} - {response_text}")
-                    if channel:
-                        await channel.send(f"Failed to send email to `{target_email}` for **{after.name}**. API returned status: {response.status}")
-        except Exception as e:
-            print(f"Error sending email to {target_email}: {e}")
+            try:
+                async with http_session.post(url, headers=headers, json=payload) as response:
+                    if response.status in (200, 202):
+                        print(f"Email sent successfully to {target_email}!")
+                    else:
+                        response_text = await response.text()
+                        print(f"Error from MailerSend for {target_email}: {response.status} - {response_text}")
+            except Exception as e:
+                print(f"Error sending email to {target_email}: {e}")
 
 @bot.event
 async def on_member_remove(member):
