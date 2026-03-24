@@ -37,6 +37,7 @@ intents = discord.Intents.default()
 intents.members = True # Required for on_member_join!
 intents.message_content = True # Required for commands
 
+from discord import app_commands
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 # Shared aiohttp session — created once on startup, reused for all HTTP calls
@@ -100,6 +101,7 @@ async def setup_hook():
     global http_session
     http_session = aiohttp.ClientSession()
     bot.loop.create_task(start_web_server())
+    await bot.tree.sync()
 
 bot.setup_hook = setup_hook
 
@@ -239,76 +241,46 @@ async def sync_member_to_airtable(member):
 async def on_ready():
     print(f'Ready! Logged in as {bot.user}')
     print('Listening for users joining...')
+    bot.loop.create_task(startup_sync_recent_members())
+
+async def startup_sync_recent_members():
+    """Auto-sync members from the last 10 minutes just in case the bot went down."""
+    now = datetime.datetime.now(datetime.UTC)
+    delta = datetime.timedelta(minutes=10)
+    
+    await asyncio.sleep(5) # Give the gateway a moment to finish chunking and caching members
+    
+    for guild in bot.guilds:
+        # Respect developer mode rules
+        if DEVELOPER_MODE and guild.id == PAUSEAI_SERVER_ID:
+            continue
+        if not DEVELOPER_MODE and guild.id != PAUSEAI_SERVER_ID:
+            continue
+            
+        print(f"Performing startup sync for {guild.name}...")
+        synced_count = 0
+        for member in guild.members:
+            if member.joined_at and (now - member.joined_at) <= delta:
+                try:
+                    await sync_member_to_airtable(member)
+                    synced_count += 1
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    print(f"Error auto-syncing {member.name}: {e}")
+                    
+        print(f"Startup check complete for {guild.name}: Auto-synced {synced_count} recent members.")
 
 async def _handle_member_join(member):
-    """Background task: waits, then syncs the new member and sends coordinator emails."""
-    member_name = member.name  # capture before the sleep in case member object changes
+    """Background task: syncs the new member immediately to Airtable."""
+    await asyncio.sleep(5) # Small delay to ensure they are fully joined
     guild = member.guild
-
-    # Wait for the member to potentially receive roles via other bots/flows
-    await asyncio.sleep(180)
-
-    # Re-fetch the member in case they left or their roles changed during the wait
     member = guild.get_member(member.id)
     if not member:
-        print(f"User {member_name} left the server before the join check completed.")
         return
-
     await sync_member_to_airtable(member)
-
-    matched_roles = [role for role in member.roles if role.id in COUNTRY_ROLES]
-    if not matched_roles:
-        return
-
-    channel = bot.get_channel(int(ONBOARDING_PIPELINE_CHANNEL_ID)) if ONBOARDING_PIPELINE_CHANNEL_ID else None
-
-    url = "https://api.mailersend.com/v1/email"
-    headers = {
-        "Authorization": f"Bearer {MAILERSEND_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    # Iterate over all matched country roles and send an email to each coordinator
-    for role in matched_roles:
-        target_email = COUNTRY_ROLES[role.id]
-        print(f"User {member.name} has the {role.name} role! Sending email to {target_email}...")
-
-        payload = {
-            "from": {
-                "email": "info@pauseai.info",
-                "name": "PauseAI Info"
-            },
-            "to": [
-                {
-                    "email": target_email,
-                    "name": f"{role.name} Onboarder"
-                }
-            ],
-            "subject": f"{member.name} has joined PauseAI Discord",
-            "text": f"A new user just joined the Discord server and received the {role.name} role!\n\nUser: {member.name}",
-            "html": f"<strong>A new user just joined the Discord server and received the {role.name} role!</strong><br><br>User: {member.name}"
-        }
-
-        try:
-            async with http_session.post(url, headers=headers, json=payload) as response:
-                if response.status in (200, 202):
-                    print(f"Email sent successfully to {target_email}!")
-                    if channel:
-                        await channel.send(f"An email was sent successfully to `{target_email}` for the new member: **{member.name}** ({role.name})")
-                else:
-                    response_text = await response.text()
-                    print(f"Error from MailerSend for {target_email}: {response.status} - {response_text}")
-                    if channel:
-                        await channel.send(f"Failed to send email to `{target_email}` for **{member.name}**. API returned status: {response.status}")
-        except Exception as e:
-            print(f"Error sending email to {target_email}: {e}")
-            if channel:
-                await channel.send(f"Failed to send email to `{target_email}` for **{member.name}**. Please check the bot logs.")
 
 @bot.event
 async def on_member_join(member):
-    # Environment Protection:
-    # Dev mode: ignore the public server. Prod mode: ignore all test servers.
     if DEVELOPER_MODE and member.guild.id == PAUSEAI_SERVER_ID:
         print(f"DEV MODE: Ignored {member.name} joining public server.")
         return
@@ -316,10 +288,56 @@ async def on_member_join(member):
         print(f"PROD MODE: Ignored {member.name} joining test/dev server.")
         return
 
-    print(f"User {member.name} joined! Waiting some minutes before checking role...")
-    # Offload the long-running work to a background task so the event handler
-    # returns immediately and does not hold up the gateway dispatch loop.
+    print(f"User {member.name} joined! Preparing initial Airtable sync...")
     asyncio.create_task(_handle_member_join(member))
+
+@bot.event
+async def on_member_update(before, after):
+    if DEVELOPER_MODE and after.guild.id == PAUSEAI_SERVER_ID:
+        return
+    if not DEVELOPER_MODE and after.guild.id != PAUSEAI_SERVER_ID:
+        return
+
+    # Check if any new roles were added
+    new_roles = [role for role in after.roles if role not in before.roles]
+    added_country_roles = [role for role in new_roles if role.id in COUNTRY_ROLES]
+    
+    if not added_country_roles:
+        return
+
+    print(f"User {after.name} received country role(s)! Updating Airtable and emailing coordinators.")
+    await sync_member_to_airtable(after)
+
+    channel = bot.get_channel(int(ONBOARDING_PIPELINE_CHANNEL_ID)) if ONBOARDING_PIPELINE_CHANNEL_ID else None
+    url = "https://api.mailersend.com/v1/email"
+    headers = {
+        "Authorization": f"Bearer {MAILERSEND_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    for role in added_country_roles:
+        target_email = COUNTRY_ROLES[role.id]
+        payload = {
+            "from": {"email": "info@pauseai.info", "name": "PauseAI Info"},
+            "to": [{"email": target_email, "name": f"{role.name} Onboarder"}],
+            "subject": f"{after.name} has joined PauseAI Discord",
+            "text": f"A new user just joined the Discord server and received the {role.name} role!\n\nUser: {after.name}",
+            "html": f"<strong>A new user just joined the Discord server and received the {role.name} role!</strong><br><br>User: {after.name}"
+        }
+
+        try:
+            async with http_session.post(url, headers=headers, json=payload) as response:
+                if response.status in (200, 202):
+                    print(f"Email sent successfully to {target_email}!")
+                    if channel:
+                        await channel.send(f"An email was sent successfully to `{target_email}` for user: **{after.name}** ({role.name})")
+                else:
+                    response_text = await response.text()
+                    print(f"Error from MailerSend for {target_email}: {response.status} - {response_text}")
+                    if channel:
+                        await channel.send(f"Failed to send email to `{target_email}` for **{after.name}**. API returned status: {response.status}")
+        except Exception as e:
+            print(f"Error sending email to {target_email}: {e}")
 
 @bot.event
 async def on_member_remove(member):
@@ -360,40 +378,33 @@ async def on_member_remove(member):
         except Exception as e:
             print(f"Exception marking {member.name} as left: {e}")
 
-@bot.command(name='export_members')
-async def export_members(ctx):
-    if not ctx.guild:
-        return # Ignore Direct Messages
-
-    # Environment Protection:
-    if DEVELOPER_MODE and ctx.guild.id == PAUSEAI_SERVER_ID:
-        print(f"DEV MODE: Ignored command from {ctx.author.name} in public server.")
+@bot.tree.command(name='export_members', description="Generates a CSV export of all members.")
+async def export_members(interaction: discord.Interaction):
+    if not interaction.guild:
         return
-    if not DEVELOPER_MODE and ctx.guild.id != PAUSEAI_SERVER_ID:
-        print(f"PROD MODE: Ignored command from {ctx.author.name} in test/dev server.")
+    if DEVELOPER_MODE and interaction.guild.id == PAUSEAI_SERVER_ID:
+        await interaction.response.send_message("❌ Cannot run in public server in Dev Mode.", ephemeral=True)
+        return
+    if not DEVELOPER_MODE and interaction.guild.id != PAUSEAI_SERVER_ID:
+        await interaction.response.send_message("❌ Cannot run in test server in Prod Mode.", ephemeral=True)
         return
 
-    # Check if user is administrator or has the specific role
-    is_admin = ctx.author.guild_permissions.administrator
+    is_admin = interaction.user.guild_permissions.administrator
     has_role = False
-    
     if ALLOWED_EXPORT_ROLE_ID != 0:
-        has_role = any(role.id == ALLOWED_EXPORT_ROLE_ID for role in ctx.author.roles)
+        has_role = any(role.id == ALLOWED_EXPORT_ROLE_ID for role in interaction.user.roles)
 
     if not is_admin and not has_role:
-        await ctx.send("❌ You must be an Administrator or have the required role to run this command.")
+        await interaction.response.send_message("❌ You must be an Administrator or have the required role to run this command.", ephemeral=True)
         return
 
-    status_msg = await ctx.send("⏳ Generating CSV export of all members... (This might take a moment)")
+    await interaction.response.defer()
     
     csv_buffer = io.StringIO()
     writer = csv.writer(csv_buffer)
-    
-    # Write CSV Header
     writer.writerow(['id', 'username', 'nick', 'global_name', 'joined_at', 'role_ids', 'role_names'])
     
-    # Write each member's info to the CSV
-    for member in ctx.guild.members:
+    for member in interaction.guild.members:
         joined_at_str = member.joined_at.isoformat() if member.joined_at else ""
         role_ids_str = ", ".join([str(role.id) for role in member.roles if role.name != "@everyone"])
         role_names_str = ", ".join([role.name for role in member.roles if role.name != "@everyone"])
@@ -410,61 +421,61 @@ async def export_members(ctx):
         
     csv_buffer.seek(0)
     file = discord.File(fp=csv_buffer, filename="members_export.csv")
-    
-    await status_msg.delete()
-    await ctx.send(content="✅ Here is the export of all members:", file=file)
+    await interaction.followup.send(content="✅ Here is the export of all members:", file=file)
 
-@bot.command(name='sync_airtable')
-async def sync_airtable(ctx, member: discord.Member):
-    if not ctx.guild:
+@bot.tree.command(name='sync_member', description="Syncs a specific member to Airtable.")
+@app_commands.describe(member="The Discord member to sync")
+async def sync_member(interaction: discord.Interaction, member: discord.Member):
+    if not interaction.guild:
         return
 
-    is_admin = ctx.author.guild_permissions.administrator
+    is_admin = interaction.user.guild_permissions.administrator
     has_role = False
     if ALLOWED_EXPORT_ROLE_ID != 0:
-        has_role = any(role.id == ALLOWED_EXPORT_ROLE_ID for role in ctx.author.roles)
+        has_role = any(role.id == ALLOWED_EXPORT_ROLE_ID for role in interaction.user.roles)
 
     if not is_admin and not has_role:
-        await ctx.send("❌ You must be an Administrator or have the required role to run this command.")
+        await interaction.response.send_message("❌ You must be an Administrator or have the required role to run this command.", ephemeral=True)
         return
 
-    status_msg = await ctx.send(f"⏳ Syncing {member.name} to Airtable...")
+    await interaction.response.defer()
     try:
         await sync_member_to_airtable(member)
-        await status_msg.edit(content=f"✅ Successfully synced {member.name} to Airtable!")
+        await interaction.followup.send(content=f"✅ Successfully synced {member.name} to Airtable!")
     except Exception as e:
-        await status_msg.edit(content=f"❌ Failed to sync {member.name}: {e}")
+        await interaction.followup.send(content=f"❌ Failed to sync {member.name}: {e}")
 
-@bot.command(name='sync_recent')
-async def sync_recent(ctx, hours: float = 24.0):
-    if not ctx.guild:
+@bot.tree.command(name='sync_recent', description="Syncs members who joined in the last N minutes.")
+@app_commands.describe(minutes="Minutes backward to check for new members")
+async def sync_recent_cmd(interaction: discord.Interaction, minutes: float = 60.0):
+    if not interaction.guild:
         return
 
-    is_admin = ctx.author.guild_permissions.administrator
+    is_admin = interaction.user.guild_permissions.administrator
     has_role = False
     if ALLOWED_EXPORT_ROLE_ID != 0:
-        has_role = any(role.id == ALLOWED_EXPORT_ROLE_ID for role in ctx.author.roles)
+        has_role = any(role.id == ALLOWED_EXPORT_ROLE_ID for role in interaction.user.roles)
 
     if not is_admin and not has_role:
-        await ctx.send("❌ You must be an Administrator or have the required role to run this command.")
+        await interaction.response.send_message("❌ You must be an Administrator or have the required role to run this command.", ephemeral=True)
         return
 
-    status_msg = await ctx.send(f"⏳ Checking for members who joined in the last {hours} hours...")
+    await interaction.response.defer()
     
     now = datetime.datetime.now(datetime.UTC)
-    delta = datetime.timedelta(hours=hours)
+    delta = datetime.timedelta(minutes=minutes)
     
     synced_count = 0
-    for member in ctx.guild.members:
-        if member.joined_at and (now - member.joined_at) <= delta:
+    for m in interaction.guild.members:
+        if m.joined_at and (now - m.joined_at) <= delta:
             try:
-                await sync_member_to_airtable(member)
+                await sync_member_to_airtable(m)
                 synced_count += 1
                 await asyncio.sleep(0.5)
             except Exception as e:
-                print(f"Error syncing {member.name} in sync_recent: {e}")
+                print(f"Error syncing {m.name} in sync_recent: {e}")
                 
-    await status_msg.edit(content=f"✅ Finished! Synced {synced_count} recent members to Airtable.")
+    await interaction.followup.send(content=f"✅ Finished! Synced {synced_count} recent members to Airtable.")
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN or not MAILERSEND_API_KEY:
