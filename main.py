@@ -43,7 +43,7 @@ COUNTRY_DATA = {
     1188719374941560925: {"name": "UK", "onboarders": [335365981276995594, 925051691798233089], "msg": "", "noDM": True, "email": None},
     1188717849980702781: {"name": "US", "onboarders": [732773275238793266], "msg": "", "email": None},
     1188719426552479824: {"name": "France", "onboarders": [456868543225528331], "msg": "", "email": None},
-    1188719399117541396: {"name": "Germany", "onboarders": [775477651703726092], "msg": "", "email": "germany@pause-ai.info"},
+    1188719399117541396: {"name": "Germany", "onboarders": [775477651703726092], "msg": "", "email": "germany@pauseai.info"},
     1188719443954643035: {"name": "Netherlands", "onboarders": [1363472971141746718], "msg": "", "email": None},
     1188719729662234624: {"name": "Italy", "onboarders": [1217966947057139762], "msg": "", "email": None},
     1188720344882753566: {"name": "Spain", "onboarders": [758415679526797342], "msg": "", "email": None},
