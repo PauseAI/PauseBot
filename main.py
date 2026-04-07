@@ -6,6 +6,7 @@ import aiohttp
 import asyncio
 import csv
 import io
+import re
 from discord.ext import commands
 from dotenv import load_dotenv
 from aiohttp import web
@@ -155,7 +156,34 @@ async def find_airtable_record(discord_id):
     return None, None
 
 
-async def sync_member_to_airtable(member):
+async def update_airtable_fields(discord_id: str, fields_to_update: dict):
+    if not AIRTABLE_PERSONAL_ACCESS_TOKEN:
+        return
+        
+    record_id, _ = await find_airtable_record(discord_id)
+    if record_id:
+        url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}/{record_id}"
+        headers = {
+            "Authorization": f"Bearer {AIRTABLE_PERSONAL_ACCESS_TOKEN}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "fields": fields_to_update,
+            "typecast": True
+        }
+        try:
+            async with http_session.patch(url, headers=headers, json=payload) as response:
+                if response.status == 200:
+                    print(f"Successfully updated fields {list(fields_to_update.keys())} for {discord_id} in Airtable!")
+                else:
+                    text = await response.text()
+                    print(f"Error updating fields {list(fields_to_update.keys())} for {discord_id}: {response.status} - {text}")
+        except Exception as e:
+            print(f"Exception updating fields {list(fields_to_update.keys())} for {discord_id}: {e}")
+
+
+
+async def sync_member_to_airtable(member, extra_fields=None):
     if not AIRTABLE_PERSONAL_ACCESS_TOKEN:
         return
 
@@ -219,7 +247,8 @@ async def sync_member_to_airtable(member):
                 "joined_at": joined_at_str,
                 "role_ids": role_ids,
                 "role_names": role_names,
-                "left_at": None
+                "left_at": None,
+                **(extra_fields or {})
             },
             "typecast": True
         }
@@ -246,7 +275,8 @@ async def sync_member_to_airtable(member):
                         "joined_at": joined_at_str,
                         "role_ids": role_ids,
                         "role_names": role_names,
-                        "left_at": None
+                        "left_at": None,
+                        **(extra_fields or {})
                     }
                 }
             ],
@@ -366,9 +396,9 @@ async def on_member_update(before, after):
     if not added_country_roles:
         return
 
-    print(f"User {after.name} received country role(s)! Updating Airtable and notifying coordinators.")
-    await sync_member_to_airtable(after)
-
+    # Will track if we need to set the notification flag
+    onboarding_notification = False
+    
     channel = bot.get_channel(int(ONBOARDING_PIPELINE_CHANNEL_ID)) if ONBOARDING_PIPELINE_CHANNEL_ID else None
     
     for role in added_country_roles:
@@ -379,6 +409,8 @@ async def on_member_update(before, after):
             onboarder_mentions = " ".join([f"<@{uid}>" for uid in info["onboarders"]])
             ping_msg = f"{onboarder_mentions} : {after.mention} has joined from {info['name']}!"
             await channel.send(ping_msg)
+            
+            onboarding_notification = True
             
         # 2. Send MailerSend Email (if email exists)
         target_email = info.get("email")
@@ -405,6 +437,10 @@ async def on_member_update(before, after):
                         print(f"Error from MailerSend for {target_email}: {response.status} - {response_text}")
             except Exception as e:
                 print(f"Error sending email to {target_email}: {e}")
+
+    print(f"User {after.name} received country role(s)! Updating Airtable and notifying coordinators.")
+    extra_fields = {"onboarding_notification": True} if onboarding_notification else None
+    await sync_member_to_airtable(after, extra_fields=extra_fields)
 
 @bot.event
 async def on_member_remove(member):
@@ -543,6 +579,36 @@ async def sync_recent_cmd(interaction: discord.Interaction, minutes: float = 60.
                 print(f"Error syncing {m.name} in sync_recent: {e}")
                 
     await interaction.followup.send(content=f"✅ Finished! Synced {synced_count} recent members to Airtable.")
+
+@bot.event
+async def on_raw_reaction_add(payload):
+    if not ONBOARDING_PIPELINE_CHANNEL_ID:
+        return
+        
+    if payload.channel_id != int(ONBOARDING_PIPELINE_CHANNEL_ID):
+        return
+        
+    # Ignore bot's own reactions
+    if payload.user_id == bot.user.id:
+        return
+
+    channel = bot.get_channel(payload.channel_id)
+    if not channel:
+        return
+        
+    try:
+        message = await channel.fetch_message(payload.message_id)
+    except discord.NotFound:
+        return
+        
+    if message.author.id != bot.user.id:
+        return
+        
+    match = re.search(r'<@!?(\d+)>\s+has joined from', message.content)
+    if match:
+        joined_user_id = match.group(1)
+        print(f"Reaction added to notification for user {joined_user_id}. Updating Airtable.")
+        await update_airtable_fields(joined_user_id, {"discord_reaction": True})
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN or not MAILERSEND_API_KEY:
