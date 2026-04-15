@@ -181,7 +181,72 @@ async def update_airtable_fields(discord_id: str, fields_to_update: dict):
         except Exception as e:
             print(f"Exception updating fields {list(fields_to_update.keys())} for {discord_id}: {e}")
 
+async def get_airtable_discord_id_mapping():
+    """Fetches all records from Airtable and maps discord ID (string) to Airtable record ID."""
+    if not AIRTABLE_PERSONAL_ACCESS_TOKEN:
+        return {}
+        
+    mapping = {}
+    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}"
+    headers = {
+        "Authorization": f"Bearer {AIRTABLE_PERSONAL_ACCESS_TOKEN}"
+    }
+    
+    offset = None
+    while True:
+        params = {"fields[]": "id"}
+        if offset:
+            params["offset"] = offset
+            
+        try:
+            async with http_session.get(url, headers=headers, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    for record in data.get("records", []):
+                        discord_id_val = record.get("fields", {}).get("id")
+                        if discord_id_val:
+                            mapping[str(discord_id_val)] = record["id"]
+                            
+                    offset = data.get("offset")
+                    if not offset:
+                        break
+                else:
+                    break
+        except Exception as e:
+            print(f"Error fetching Airtable records: {e}")
+            break
+            
+    return mapping
 
+async def batch_update_airtable_fields(updates_list):
+    """
+    updates_list should be a list of dicts: [{"id": record_id, "fields": {...}}, ...]
+    Airtable supports up to 10 records per PATCH request.
+    """
+    if not AIRTABLE_PERSONAL_ACCESS_TOKEN or not updates_list:
+        return
+        
+    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}"
+    headers = {
+        "Authorization": f"Bearer {AIRTABLE_PERSONAL_ACCESS_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    # Chunk into batches of 10 maximum (Airtable limit)
+    chunks = [updates_list[i:i + 10] for i in range(0, len(updates_list), 10)]
+    for chunk in chunks:
+        payload = {
+            "records": chunk,
+            "typecast": True
+        }
+        try:
+            async with http_session.patch(url, headers=headers, json=payload) as response:
+                if response.status != 200:
+                    text = await response.text()
+                    print(f"Error in batch update: {response.status} - {text}")
+        except Exception as e:
+            print(f"Exception in batch update: {e}")
+        await asyncio.sleep(0.2) # Sleep slightly between chunk requests to respect API rate limits
 
 async def sync_member_to_airtable(member, extra_fields=None):
     if not AIRTABLE_PERSONAL_ACCESS_TOKEN:
@@ -579,6 +644,74 @@ async def sync_recent_cmd(interaction: discord.Interaction, minutes: float = 60.
                 print(f"Error syncing {m.name} in sync_recent: {e}")
                 
     await interaction.followup.send(content=f"✅ Finished! Synced {synced_count} recent members to Airtable.")
+
+@bot.tree.command(name='sync_old_notifications', description="Retroactively updates Airtable for old onboarding notifications")
+@app_commands.describe(limit="Number of past messages to scan (default 200)")
+async def sync_old_notifications_cmd(interaction: discord.Interaction, limit: int = 200):
+    if not interaction.guild:
+        return
+
+    is_admin = interaction.user.guild_permissions.administrator
+    has_role = False
+    if ALLOWED_EXPORT_ROLE_ID != 0:
+        has_role = any(role.id == ALLOWED_EXPORT_ROLE_ID for role in interaction.user.roles)
+
+    if not is_admin and not has_role:
+        await interaction.response.send_message("❌ You must be an Administrator or have the required role to run this command.", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+    
+    channel = bot.get_channel(int(ONBOARDING_PIPELINE_CHANNEL_ID)) if ONBOARDING_PIPELINE_CHANNEL_ID else None
+    if not channel:
+        await interaction.followup.send(content="❌ Onboarding channel not configured or found.")
+        return
+        
+    await interaction.followup.send(content="⏳ Scanning channel history... please wait.")    
+        
+    updates_needed = {}
+    async for message in channel.history(limit=limit):
+        if message.author.id != bot.user.id:
+            continue
+            
+        match = re.search(r'<@!?(\d+)>\s+has joined from', message.content)
+        if match:
+            joined_user_id = match.group(1)
+            
+            extra_fields = {"onboarding_notification": True}
+            
+            # Check if there's any reactions
+            if len(message.reactions) > 0:
+                extra_fields["discord_reaction"] = True
+                
+            if joined_user_id not in updates_needed:
+                updates_needed[joined_user_id] = extra_fields
+            else:
+                updates_needed[joined_user_id].update(extra_fields)
+                
+    if not updates_needed:
+        await interaction.followup.send(content="✅ Found 0 records that needed updates.")
+        return
+        
+    await interaction.followup.send(content=f"🔍 Found {len(updates_needed)} users needing updates. Fetching Airtable IDs...")
+    
+    mapping = await get_airtable_discord_id_mapping()
+    
+    batch_payload = []
+    for discord_id, fields in updates_needed.items():
+        record_id = mapping.get(discord_id)
+        if record_id:
+            batch_payload.append({
+                "id": record_id,
+                "fields": fields
+            })
+            
+    if batch_payload:
+        await interaction.followup.send(content=f"🚀 Sending {len(batch_payload)} records to Airtable using batch updates...")
+        await batch_update_airtable_fields(batch_payload)
+        await interaction.followup.send(content=f"✅ Finished retroactively updating {len(batch_payload)} Airtable records!")
+    else:
+        await interaction.followup.send(content="❌ None of the found users had records in Airtable.")
 
 @bot.event
 async def on_raw_reaction_add(payload):
