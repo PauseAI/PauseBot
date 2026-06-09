@@ -758,9 +758,13 @@ async def on_message(message):
         if not DEVELOPER_MODE and message.guild.id != PAUSEAI_SERVER_ID:
             return
 
-    # If YAGPDB sends a message in the moderators channel, ping the moderators role
+    # If YAGPDB sends a message in the moderators channel, ping the moderators role in a thread
     if message.author.id == YAGPDB_USER_ID and message.channel.id == MODERATORS_CHANNEL_ID:
-        await message.channel.send(f"<@&{MODERATORS_ROLE_ID}>")
+        try:
+            thread = await message.create_thread(name="YAGPDB Alert")
+            await thread.send(f"<@&{MODERATORS_ROLE_ID}>")
+        except Exception as e:
+            print(f"Error creating thread or pinging moderators: {e}")
 
     await bot.process_commands(message)
 
