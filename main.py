@@ -24,6 +24,9 @@ ALLOWED_EXPORT_ROLE_ID = 1409324452545822793
 # Developer / Production Environment Mode
 DEVELOPER_MODE = os.getenv('DEVELOPER_MODE', 'false').lower() == 'true'
 PAUSEAI_SERVER_ID = 1100491867675709580
+MODERATORS_CHANNEL_ID = 1103655770693832775
+MODERATORS_ROLE_ID = 1108034486479880236
+YAGPDB_USER_ID = 204255221017214977
 
 ONBOARDING_PIPELINE_CHANNEL_ID = 1174807044990193775
 AIRTABLE_BASE_ID = "appWPTGqZmUcs3NWu"
@@ -742,6 +745,24 @@ async def on_raw_reaction_add(payload):
         joined_user_id = match.group(1)
         print(f"Reaction added to notification for user {joined_user_id}. Updating Airtable.")
         await update_airtable_fields(joined_user_id, {"discord_reaction": True})
+
+@bot.event
+async def on_message(message):
+    if message.author.id == bot.user.id:
+        return
+
+    # Check developer mode restrictions to prevent conflicts during local testing
+    if message.guild:
+        if DEVELOPER_MODE and message.guild.id == PAUSEAI_SERVER_ID:
+            return
+        if not DEVELOPER_MODE and message.guild.id != PAUSEAI_SERVER_ID:
+            return
+
+    # If YAGPDB sends a message in the moderators channel, ping the moderators role
+    if message.author.id == YAGPDB_USER_ID and message.channel.id == MODERATORS_CHANNEL_ID:
+        await message.channel.send(f"<@&{MODERATORS_ROLE_ID}>")
+
+    await bot.process_commands(message)
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN or not MAILERSEND_API_KEY:
