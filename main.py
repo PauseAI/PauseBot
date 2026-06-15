@@ -27,6 +27,7 @@ PAUSEAI_SERVER_ID = 1100491867675709580
 MODERATORS_CHANNEL_ID = 1103655770693832775
 MODERATORS_ROLE_ID = 1108034486479880236
 YAGPDB_USER_ID = 204255221017214977
+last_yagpdb_alert_time = None
 
 ONBOARDING_PIPELINE_CHANNEL_ID = 1174807044990193775
 AIRTABLE_BASE_ID = "appWPTGqZmUcs3NWu"
@@ -758,13 +759,17 @@ async def on_message(message):
         if not DEVELOPER_MODE and message.guild.id != PAUSEAI_SERVER_ID:
             return
 
-    # If YAGPDB sends a message in the moderators channel, ping the moderators role in a thread
+    # If YAGPDB sends a message in the moderators channel, ping the moderators role in a thread (cooldown of 60s to prevent spam)
     if message.author.id == YAGPDB_USER_ID and message.channel.id == MODERATORS_CHANNEL_ID:
-        try:
-            thread = await message.create_thread(name="YAGPDB Alert")
-            await thread.send(f"<@&{MODERATORS_ROLE_ID}>")
-        except Exception as e:
-            print(f"Error creating thread or pinging moderators: {e}")
+        global last_yagpdb_alert_time
+        now = datetime.datetime.now(datetime.UTC)
+        if last_yagpdb_alert_time is None or (now - last_yagpdb_alert_time).total_seconds() > 60:
+            last_yagpdb_alert_time = now
+            try:
+                thread = await message.create_thread(name="YAGPDB Alert")
+                await thread.send(f"<@&{MODERATORS_ROLE_ID}>")
+            except Exception as e:
+                print(f"Error creating thread or pinging moderators: {e}")
 
     await bot.process_commands(message)
 
