@@ -66,7 +66,6 @@ COUNTRY_DATA = {
 
 intents = discord.Intents.default()
 intents.members = True # Required for on_member_join!
-intents.message_content = True # Required for commands
 
 from discord import app_commands
 bot = commands.Bot(command_prefix='!', intents=intents)
@@ -129,7 +128,7 @@ async def handle_webhook(request):
         
     except Exception as e:
         print(f"WEBHOOK ERROR: {e}")
-        return web.json_response({"error": str(e)}, status=500)
+        return web.json_response({"error": "Internal server error"}, status=500)
 
 async def start_web_server():
     app = web.Application()
@@ -158,7 +157,11 @@ bot.setup_hook = setup_hook
 async def find_airtable_record(discord_id):
     if not AIRTABLE_PERSONAL_ACCESS_TOKEN:
         return None, None
-        
+
+    if not str(discord_id).isdigit():
+        print(f"Refusing to query Airtable with non-numeric discord_id: {discord_id!r}")
+        return None, None
+
     formula = f"{{id}}='{discord_id}'"
     encoded_formula = urllib.parse.quote(formula)
     url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}?filterByFormula={encoded_formula}"
