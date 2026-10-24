@@ -5,6 +5,7 @@ import discord
 import aiohttp
 import asyncio
 import csv
+import hmac
 import io
 import re
 from discord.ext import commands
@@ -73,12 +74,26 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 # Shared aiohttp session — created once on startup, reused for all HTTP calls
 http_session: aiohttp.ClientSession | None = None
 
+# Permissions a webhook-granted role must NOT have, to prevent privilege escalation
+# if WEBHOOK_SECRET is ever leaked.
+DANGEROUS_ROLE_PERMISSIONS = (
+    "administrator", "manage_guild", "manage_roles", "manage_channels",
+    "manage_webhooks", "manage_messages", "kick_members", "ban_members",
+    "mention_everyone",
+)
+
+def is_role_safe_for_webhook(role):
+    if role.is_default() or role.is_bot_managed():
+        return False
+    return not any(getattr(role.permissions, perm) for perm in DANGEROUS_ROLE_PERMISSIONS)
+
 async def handle_webhook(request):
     auth_header = request.headers.get("Authorization")
     if not WEBHOOK_SECRET:
         return web.json_response({"error": "Webhook secret not configured in the bot"}, status=500)
-        
-    if not auth_header or auth_header != f"Bearer {WEBHOOK_SECRET}":
+
+    expected_header = f"Bearer {WEBHOOK_SECRET}"
+    if not auth_header or not hmac.compare_digest(auth_header, expected_header):
         return web.json_response({"error": "Unauthorized"}, status=401)
         
     try:
@@ -103,7 +118,11 @@ async def handle_webhook(request):
         role = guild.get_role(int(role_id))
         if not role:
             return web.json_response({"error": f"Role {role_id} not found in guild"}, status=404)
-            
+
+        if not is_role_safe_for_webhook(role):
+            print(f"WEBHOOK: Refused to add disallowed role '{role.name}' to {member.name}")
+            return web.json_response({"error": f"Role {role.name} is not permitted via webhook"}, status=403)
+
         await member.add_roles(role)
         print(f"WEBHOOK: Added role '{role.name}' to {member.name}")
         return web.json_response({"success": True, "message": f"Added role {role.name} to {member.name}"})
@@ -570,8 +589,8 @@ async def export_members(interaction: discord.Interaction):
         await interaction.response.send_message("❌ You must be an Administrator or have the required role to run this command.", ephemeral=True)
         return
 
-    await interaction.response.defer()
-    
+    await interaction.response.defer(ephemeral=True)
+
     csv_buffer = io.StringIO()
     writer = csv.writer(csv_buffer)
     writer.writerow(['id', 'username', 'nick', 'global_name', 'joined_at', 'role_ids', 'role_names'])
@@ -593,7 +612,7 @@ async def export_members(interaction: discord.Interaction):
         
     csv_buffer.seek(0)
     file = discord.File(fp=csv_buffer, filename="members_export.csv")
-    await interaction.followup.send(content="✅ Here is the export of all members:", file=file)
+    await interaction.followup.send(content="✅ Here is the export of all members:", file=file, ephemeral=True)
 
 @bot.tree.command(name='sync_member', description="Syncs a specific member to Airtable.")
 @app_commands.describe(member="The Discord member to sync")
