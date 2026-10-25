@@ -73,15 +73,18 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 # Shared aiohttp session — created once on startup, reused for all HTTP calls
 http_session: aiohttp.ClientSession | None = None
 
-# Permissions a webhook-granted role must NOT have, to prevent privilege escalation
-# if WEBHOOK_SECRET is ever leaked.
+# Permissions a role must NOT have for the bot to grant/re-grant it automatically
+# (via the webhook, or via Airtable-driven role restoration), so a leaked
+# WEBHOOK_SECRET or a stale/tampered Airtable field can't be used to escalate.
 DANGEROUS_ROLE_PERMISSIONS = (
     "administrator", "manage_guild", "manage_roles", "manage_channels",
     "manage_webhooks", "manage_messages", "kick_members", "ban_members",
-    "mention_everyone",
+    "mention_everyone", "moderate_members", "manage_nicknames",
+    "manage_events", "manage_threads", "manage_emojis_and_stickers",
+    "view_audit_log",
 )
 
-def is_role_safe_for_webhook(role):
+def is_role_safe_to_grant(role):
     if role.is_default() or role.is_bot_managed():
         return False
     return not any(getattr(role.permissions, perm) for perm in DANGEROUS_ROLE_PERMISSIONS)
@@ -94,7 +97,12 @@ async def handle_webhook(request):
     expected_header = f"Bearer {WEBHOOK_SECRET}"
     if not auth_header or not hmac.compare_digest(auth_header, expected_header):
         return web.json_response({"error": "Unauthorized"}, status=401)
-        
+
+    # This endpoint only ever targets the production guild, so refuse it entirely
+    # while running in dev mode (mirrors the DEVELOPER_MODE gate every other handler enforces).
+    if DEVELOPER_MODE:
+        return web.json_response({"error": "Webhook disabled while DEVELOPER_MODE is on"}, status=403)
+
     try:
         data = await request.json()
         user_id = data.get("user_id")
@@ -118,7 +126,7 @@ async def handle_webhook(request):
         if not role:
             return web.json_response({"error": f"Role {role_id} not found in guild"}, status=404)
 
-        if not is_role_safe_for_webhook(role):
+        if not is_role_safe_to_grant(role):
             print(f"WEBHOOK: Refused to add disallowed role '{role.name}' to {member.name}")
             return web.json_response({"error": f"Role {role.name} is not permitted via webhook"}, status=403)
 
@@ -317,7 +325,7 @@ async def sync_member_to_airtable(member, extra_fields=None):
                 if role and role not in roles_to_assign:
                     roles_to_assign.append(role)
         
-        roles_to_assign = [r for r in roles_to_assign if not r.is_default() and not r.is_bot_managed()]
+        roles_to_assign = [r for r in roles_to_assign if is_role_safe_to_grant(r)]
 
         if roles_to_assign:
             try:
@@ -622,6 +630,12 @@ async def export_members(interaction: discord.Interaction):
 async def sync_member(interaction: discord.Interaction, member: discord.Member):
     if not interaction.guild:
         return
+    if DEVELOPER_MODE and interaction.guild.id == PAUSEAI_SERVER_ID:
+        await interaction.response.send_message("❌ Cannot run in public server in Dev Mode.", ephemeral=True)
+        return
+    if not DEVELOPER_MODE and interaction.guild.id != PAUSEAI_SERVER_ID:
+        await interaction.response.send_message("❌ Cannot run in test server in Prod Mode.", ephemeral=True)
+        return
 
     is_admin = interaction.user.guild_permissions.administrator
     has_role = False
@@ -643,6 +657,12 @@ async def sync_member(interaction: discord.Interaction, member: discord.Member):
 @app_commands.describe(minutes="Minutes backward to check for new members")
 async def sync_recent_cmd(interaction: discord.Interaction, minutes: float = 60.0):
     if not interaction.guild:
+        return
+    if DEVELOPER_MODE and interaction.guild.id == PAUSEAI_SERVER_ID:
+        await interaction.response.send_message("❌ Cannot run in public server in Dev Mode.", ephemeral=True)
+        return
+    if not DEVELOPER_MODE and interaction.guild.id != PAUSEAI_SERVER_ID:
+        await interaction.response.send_message("❌ Cannot run in test server in Prod Mode.", ephemeral=True)
         return
 
     is_admin = interaction.user.guild_permissions.administrator
@@ -675,6 +695,12 @@ async def sync_recent_cmd(interaction: discord.Interaction, minutes: float = 60.
 @app_commands.describe(limit="Number of past messages to scan (default 200)")
 async def sync_old_notifications_cmd(interaction: discord.Interaction, limit: int = 200):
     if not interaction.guild:
+        return
+    if DEVELOPER_MODE and interaction.guild.id == PAUSEAI_SERVER_ID:
+        await interaction.response.send_message("❌ Cannot run in public server in Dev Mode.", ephemeral=True)
+        return
+    if not DEVELOPER_MODE and interaction.guild.id != PAUSEAI_SERVER_ID:
+        await interaction.response.send_message("❌ Cannot run in test server in Prod Mode.", ephemeral=True)
         return
 
     is_admin = interaction.user.guild_permissions.administrator
@@ -743,7 +769,12 @@ async def sync_old_notifications_cmd(interaction: discord.Interaction, limit: in
 async def on_raw_reaction_add(payload):
     if not ONBOARDING_PIPELINE_CHANNEL_ID:
         return
-        
+
+    if DEVELOPER_MODE and payload.guild_id == PAUSEAI_SERVER_ID:
+        return
+    if not DEVELOPER_MODE and payload.guild_id != PAUSEAI_SERVER_ID:
+        return
+
     if payload.channel_id != int(ONBOARDING_PIPELINE_CHANNEL_ID):
         return
         
