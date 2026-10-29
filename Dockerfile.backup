@@ -1,0 +1,19 @@
+# Image for the backup cron service (railway.backup.json). jobs/backup.py uses only the standard
+# library, so this carries Python and the Postgres client. Keep postgresql-client-N at or above the
+# Railway Postgres major version; the job refuses to run otherwise.
+FROM python:3.14-slim-trixie
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && install -d /usr/share/postgresql-common/pgdg \
+ && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+ && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt trixie-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends postgresql-client-18 \
+ && apt-get purge -y curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY jobs/backup.py ./jobs/backup.py
+
+CMD ["python", "jobs/backup.py"]
