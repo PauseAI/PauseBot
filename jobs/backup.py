@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -100,12 +101,31 @@ def _major(version_text):
     return int(re.search(r"\d+", version_text).group())
 
 
+def libpq_args(dsn):
+    """Splits the password out of the DSN into PGPASSWORD, so it never appears in a command line,
+    and so never in the CalledProcessError text that ends up in the logs."""
+    url = urllib.parse.urlsplit(dsn)
+    env = dict(os.environ)
+    if url.password is None:
+        return dsn, env
+    env["PGPASSWORD"] = urllib.parse.unquote(url.password)
+    netloc = url.hostname or ""
+    if ":" in netloc:
+        netloc = f"[{netloc}]"  # IPv6 literal
+    if url.username:
+        netloc = f"{url.username}@{netloc}"
+    if url.port:
+        netloc = f"{netloc}:{url.port}"
+    return urllib.parse.urlunsplit(url._replace(netloc=netloc)), env
+
+
 def check_client_version(dsn):
     """Major versions of the pg_dump binary and the server; pg_dump refuses a newer server."""
     client = _major(subprocess.run(["pg_dump", "--version"], capture_output=True, text=True, check=True).stdout)
+    dsn, env = libpq_args(dsn)
     server = _major(subprocess.run(
         ["psql", "--no-psqlrc", "--tuples-only", "--no-align", "--command", "SHOW server_version", dsn],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, check=True, env=env,
     ).stdout)
     if client < server:
         raise RuntimeError(
@@ -117,10 +137,11 @@ def check_client_version(dsn):
 def create_local_backup(dsn, backup_dir):
     backup_dir.mkdir(parents=True, exist_ok=True)
     dest = backup_dir / f"{FILE_PREFIX}{timestamp()}.dump"
+    dsn, env = libpq_args(dsn)
     # Custom format is compressed and restores selectively with pg_restore.
     subprocess.run(
         ["pg_dump", "--format=custom", "--schema=public", "--no-owner", "--no-privileges", "--file", str(dest), dsn],
-        stdin=subprocess.DEVNULL, check=True,
+        stdin=subprocess.DEVNULL, check=True, env=env,
     )
     print(f"[BACKUP] Local backup created: {dest.name} ({dest.stat().st_size // 1024} KB)")
     return dest
@@ -164,7 +185,8 @@ def cleanup_b2_backups():
         bucket_id = b2_get_bucket_id(auth, os.environ["B2_BUCKET_NAME"])
         cutoff_ms = (time.time() - B2_RETENTION_DAYS * 24 * 60 * 60) * 1000
         removed = 0
-        for f in b2_list_files(auth, bucket_id, "backups/"):
+        # Only our own dumps, in case the bucket is shared with another service's backups/
+        for f in b2_list_files(auth, bucket_id, f"backups/{FILE_PREFIX}"):
             if f["uploadTimestamp"] < cutoff_ms:
                 b2_delete_file(auth, f["fileId"], f["fileName"])
                 removed += 1
@@ -185,7 +207,11 @@ def run_backup_job(dsn, backup_dir=None):
         return {"local_success": False, "b2_success": False}
     b2_success = upload_to_b2(backup_path)
     cleanup_local_backups(backup_dir)
-    cleanup_b2_backups()
+    # If uploads keep failing unnoticed, pruning would empty the bucket within 30 days
+    if b2_success:
+        cleanup_b2_backups()
+    elif is_b2_configured():
+        print("[BACKUP] Skipping B2 cleanup because the upload failed", file=sys.stderr)
     print("[BACKUP] Backup cycle complete")
     return {"local_success": True, "b2_success": b2_success}
 

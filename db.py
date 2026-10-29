@@ -13,7 +13,8 @@ async def _init_connection(conn):
 
 
 async def create_pool(dsn):
-    return await asyncpg.create_pool(dsn, min_size=1, max_size=5, init=_init_connection)
+    # A slow database should fail a query rather than leave event handlers waiting on it
+    return await asyncpg.create_pool(dsn, min_size=1, max_size=5, init=_init_connection, command_timeout=10)
 
 
 async def apply_schema(pool):
@@ -50,11 +51,28 @@ async def log_message(pool, *, message_id, guild_id, channel_id, author_id, cont
     )
 
 
-async def log_edit(pool, message_id, content, edited_at):
+async def log_edit(pool, message_id, content, edited_at, message=None):
     """Records the old content and stores the new. Returns the content before the edit, or None if
-    the message isn't logged or its text didn't change (e.g. Discord adding a link embed)."""
+    the message isn't logged or its text didn't change (e.g. Discord adding a link embed).
+
+    `message` holds the log_message fields other than content (guild_id, channel_id, author_id,
+    attachments, created_at). With it, an edit that arrives before its message was logged stores
+    the message with the edited content; log_message then leaves that row alone."""
     async with pool.acquire() as conn:
         async with conn.transaction():
+            if message is not None:
+                inserted = await conn.fetchval(
+                    """
+                    INSERT INTO message_log (message_id, guild_id, channel_id, author_id, content, attachments, created_at, edited_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    ON CONFLICT (message_id) DO NOTHING
+                    RETURNING message_id
+                    """,
+                    message_id, message["guild_id"], message["channel_id"], message["author_id"],
+                    content, message["attachments"], message["created_at"], edited_at,
+                )
+                if inserted is not None:
+                    return None
             before = await conn.fetchval(
                 "SELECT content FROM message_log WHERE message_id = $1 FOR UPDATE", message_id
             )

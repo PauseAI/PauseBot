@@ -101,3 +101,62 @@ async def test_dump_restores_into_empty_database(pool, dsn, tmp_path):
             await restored.close()
     finally:
         await pool.execute(f"DROP DATABASE IF EXISTS {restore_db}")
+
+
+# ── Credentials stay out of command lines and logs ────────────────────────────
+
+def test_libpq_args_moves_password_to_env():
+    dsn, env = backup.libpq_args("postgresql://user:p%40ss@db.example:5432/app?sslmode=require")
+    assert dsn == "postgresql://user@db.example:5432/app?sslmode=require"
+    assert env["PGPASSWORD"] == "p@ss"
+    assert backup.libpq_args("postgresql://[::1]:5433/app")[0] == "postgresql://[::1]:5433/app"
+    assert backup.libpq_args("postgresql://u:pw@[::1]:5433/app")[0] == "postgresql://u@[::1]:5433/app"
+
+
+def test_failed_backup_does_not_log_password(tmp_path, capfd):
+    bad_dsn = "postgresql://postgres:sup3rsecret@localhost:5433/does_not_exist_test"
+    assert backup.run_backup_job(bad_dsn, tmp_path)["local_success"] is False
+    out, err = capfd.readouterr()
+    assert "does_not_exist_test" in out + err
+    assert "sup3rsecret" not in out + err
+
+
+# ── B2 retention (B2 calls stubbed; the real API is checked against a bucket) ─
+
+@pytest.fixture
+def fake_b2(monkeypatch):
+    for key in ("B2_KEY_ID", "B2_APP_KEY", "B2_BUCKET_NAME"):
+        monkeypatch.setenv(key, "x")
+    calls = {"prefixes": [], "deleted": []}
+    old = (time.time() - 31 * 24 * 60 * 60) * 1000
+    monkeypatch.setattr(backup, "b2_authorize", lambda: {})
+    monkeypatch.setattr(backup, "b2_get_bucket_id", lambda auth, name: "bucket")
+
+    def list_files(auth, bucket_id, prefix):
+        calls["prefixes"].append(prefix)
+        return [
+            {"fileId": "1", "fileName": "backups/pausebot-old.dump", "uploadTimestamp": old},
+            {"fileId": "2", "fileName": "backups/pausebot-new.dump", "uploadTimestamp": time.time() * 1000},
+        ]
+
+    monkeypatch.setattr(backup, "b2_list_files", list_files)
+    monkeypatch.setattr(backup, "b2_delete_file", lambda auth, file_id, name: calls["deleted"].append(name))
+    return calls
+
+
+def test_b2_cleanup_only_touches_pausebot_dumps(fake_b2):
+    backup.cleanup_b2_backups()
+    assert fake_b2["prefixes"] == ["backups/pausebot-"]
+    assert fake_b2["deleted"] == ["backups/pausebot-old.dump"]
+
+
+async def test_b2_cleanup_skipped_when_upload_fails(pool, dsn, tmp_path, fake_b2, monkeypatch):
+    monkeypatch.setattr(backup, "upload_to_b2", lambda path: False)
+    assert backup.run_backup_job(dsn, tmp_path) == {"local_success": True, "b2_success": False}
+    assert fake_b2["deleted"] == [] and fake_b2["prefixes"] == []
+
+
+async def test_b2_cleanup_runs_after_successful_upload(pool, dsn, tmp_path, fake_b2, monkeypatch):
+    monkeypatch.setattr(backup, "upload_to_b2", lambda path: True)
+    assert backup.run_backup_job(dsn, tmp_path) == {"local_success": True, "b2_success": True}
+    assert fake_b2["deleted"] == ["backups/pausebot-old.dump"]

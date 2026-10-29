@@ -166,12 +166,16 @@ async def setup_hook():
     bot.loop.create_task(start_web_server())
     if DATABASE_URL:
         # A database outage shouldn't take onboarding down with it, so carry on without one
+        pool = None
         try:
-            db_pool = await db.create_pool(DATABASE_URL)
-            await db.apply_schema(db_pool)
+            pool = await db.create_pool(DATABASE_URL)
+            await db.apply_schema(pool)
+            db_pool = pool
             daily_snapshot_and_prune.start()
         except Exception as e:
             db_pool = None
+            if pool:
+                await pool.close()
             print(f"Database unavailable, running without snapshots or message log: {e}")
     await bot.tree.sync()
 
@@ -859,24 +863,12 @@ async def on_message(message):
         if not DEVELOPER_MODE and message.guild.id != PAUSEAI_SERVER_ID:
             return
 
-    # Replaces Quark: keep every server message for 30 days
+    # Replaces Quark: keep every server message for 30 days. Runs in the background so a slow
+    # database never holds up the moderator ping or commands below.
     if db_pool and message.guild:
-        try:
-            await db.log_message(
-                db_pool,
-                message_id=message.id,
-                guild_id=message.guild.id,
-                channel_id=message.channel.id,
-                author_id=message.author.id,
-                content=message.content,
-                attachments=[
-                    {"id": a.id, "filename": a.filename, "url": a.url, "content_type": a.content_type, "size": a.size}
-                    for a in message.attachments
-                ],
-                created_at=message.created_at,
-            )
-        except Exception as e:
-            print(f"Error logging message {message.id}: {e}")
+        task = asyncio.create_task(log_message_safely(message))
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
 
     # If YAGPDB sends a message in the moderators channel, ping the moderators role in a thread (cooldown of 60s to prevent spam)
     if message.author.id == YAGPDB_USER_ID and message.channel.id == MODERATORS_CHANNEL_ID:
@@ -892,6 +884,44 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
+# Holds references to fire-and-forget tasks so they aren't garbage collected mid-run
+background_tasks = set()
+
+async def log_message_safely(message):
+    try:
+        await db.log_message(
+            db_pool,
+            message_id=message.id,
+            guild_id=message.guild.id,
+            channel_id=message.channel.id,
+            author_id=message.author.id,
+            content=message.content,
+            attachments=[
+                {"id": a.id, "filename": a.filename, "url": a.url, "content_type": a.content_type, "size": a.size}
+                for a in message.attachments
+            ],
+            created_at=message.created_at,
+        )
+    except Exception as e:
+        print(f"Error logging message {message.id}: {e}")
+
+def message_fields_from_raw(data):
+    """The log_message fields of a raw gateway message, or None if the edit payload is partial."""
+    try:
+        return {
+            "guild_id": int(data["guild_id"]),
+            "channel_id": int(data["channel_id"]),
+            "author_id": int(data["author"]["id"]),
+            "attachments": [
+                {"id": int(a["id"]), "filename": a.get("filename"), "url": a.get("url"),
+                 "content_type": a.get("content_type"), "size": a.get("size")}
+                for a in data.get("attachments", [])
+            ],
+            "created_at": datetime.datetime.fromisoformat(data["timestamp"]),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
 # Raw events fire even for messages that aren't in discord.py's message cache
 @bot.event
 async def on_raw_message_edit(payload):
@@ -903,7 +933,11 @@ async def on_raw_message_edit(payload):
     edited = payload.data.get("edited_timestamp")
     edited_at = datetime.datetime.fromisoformat(edited) if edited else datetime.datetime.now(datetime.UTC)
     try:
-        await db.log_edit(db_pool, payload.message_id, payload.data["content"], edited_at)
+        # Passing the message's fields lets an edit that beats its on_message insert still be logged
+        await db.log_edit(
+            db_pool, payload.message_id, payload.data["content"], edited_at,
+            message=message_fields_from_raw(payload.data),
+        )
     except Exception as e:
         print(f"Error logging edit of message {payload.message_id}: {e}")
 

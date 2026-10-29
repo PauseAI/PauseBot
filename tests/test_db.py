@@ -124,3 +124,28 @@ async def test_prune_removes_only_rows_older_than_30_days(pool):
     assert await pool.fetchval("SELECT count(*) FROM message_edits") == 0
     assert (await db.latest_snapshot(pool, GUILD))["data"] == {"n": "recent"}
     assert await db.prune(pool) == (0, 0)
+
+
+# ── Edit arriving before its message is logged ────────────────────────────────
+
+def fields(**overrides):
+    base = dict(guild_id=GUILD, channel_id=111, author_id=222, attachments=[], created_at=NOW)
+    base.update(overrides)
+    return base
+
+
+async def test_edit_before_insert_stores_edited_content(pool):
+    edited_at = NOW + datetime.timedelta(seconds=1)
+    assert await db.log_edit(pool, 1, "edited", edited_at, message=fields()) is None
+    # The on_message insert lands afterwards with the original text and must not overwrite the edit
+    await log(pool, 1, content="original")
+    row = await db.get_message(pool, 1)
+    assert (row["content"], row["edited_at"], row["created_at"]) == ("edited", edited_at, NOW)
+    assert await db.get_edits(pool, 1) == []
+
+
+async def test_edit_with_message_fields_still_records_history_when_logged(pool):
+    await log(pool, 1, content="v1")
+    assert await db.log_edit(pool, 1, "v2", NOW, message=fields()) == "v1"
+    assert [e["content_before"] for e in await db.get_edits(pool, 1)] == ["v1"]
+
