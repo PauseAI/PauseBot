@@ -195,8 +195,8 @@ async def daily_snapshot_and_prune():
             continue
         try:
             # The loop also runs on every restart, so skip servers snapshotted recently
-            latest = await db.latest_snapshot(db_pool, guild.id)
-            if latest and datetime.datetime.now(datetime.UTC) - latest["taken_at"] < datetime.timedelta(hours=20):
+            latest = await db.latest_snapshot_time(db_pool, guild.id)
+            if latest and datetime.datetime.now(datetime.UTC) - latest < datetime.timedelta(hours=20):
                 continue
             snapshot_id = await db.save_snapshot(db_pool, guild.id, await take_snapshot(guild))
             print(f"Saved snapshot {snapshot_id} of {guild.name}.")
@@ -887,23 +887,32 @@ async def on_message(message):
 # Holds references to fire-and-forget tasks so they aren't garbage collected mid-run
 background_tasks = set()
 
+# Upper bound on one log write, including waiting for a free connection, so a hung database
+# can't pile up a task per message
+LOG_WRITE_TIMEOUT = 15
+
+def attachments_json(raw_attachments):
+    """What message_log stores per attachment, from raw gateway dicts (Attachment.to_dict() gives the same shape)."""
+    return [
+        {"id": int(a["id"]), "filename": a.get("filename"), "url": a.get("url"),
+         "content_type": a.get("content_type"), "size": a.get("size")}
+        for a in raw_attachments
+    ]
+
 async def log_message_safely(message):
     try:
-        await db.log_message(
+        await asyncio.wait_for(db.log_message(
             db_pool,
             message_id=message.id,
             guild_id=message.guild.id,
             channel_id=message.channel.id,
             author_id=message.author.id,
             content=message.content,
-            attachments=[
-                {"id": a.id, "filename": a.filename, "url": a.url, "content_type": a.content_type, "size": a.size}
-                for a in message.attachments
-            ],
+            attachments=attachments_json(a.to_dict() for a in message.attachments),
             created_at=message.created_at,
-        )
+        ), LOG_WRITE_TIMEOUT)
     except Exception as e:
-        print(f"Error logging message {message.id}: {e}")
+        print(f"Error logging message {message.id}: {e!r}")
 
 def message_fields_from_raw(data):
     """The log_message fields of a raw gateway message, or None if the edit payload is partial."""
@@ -912,11 +921,7 @@ def message_fields_from_raw(data):
             "guild_id": int(data["guild_id"]),
             "channel_id": int(data["channel_id"]),
             "author_id": int(data["author"]["id"]),
-            "attachments": [
-                {"id": int(a["id"]), "filename": a.get("filename"), "url": a.get("url"),
-                 "content_type": a.get("content_type"), "size": a.get("size")}
-                for a in data.get("attachments", [])
-            ],
+            "attachments": attachments_json(data.get("attachments", [])),
             "created_at": datetime.datetime.fromisoformat(data["timestamp"]),
         }
     except (KeyError, TypeError, ValueError):
@@ -930,14 +935,18 @@ async def on_raw_message_edit(payload):
     # Edits that only add embeds arrive without content
     if "content" not in payload.data:
         return
+    # on_message never logs the bot's own messages, so neither do edits
+    if payload.data.get("author", {}).get("id") == str(bot.user.id):
+        return
+    # Link unfurls and embed updates arrive with no edited_timestamp; they aren't edits
     edited = payload.data.get("edited_timestamp")
-    edited_at = datetime.datetime.fromisoformat(edited) if edited else datetime.datetime.now(datetime.UTC)
+    edited_at = datetime.datetime.fromisoformat(edited) if edited else None
     try:
         # Passing the message's fields lets an edit that beats its on_message insert still be logged
-        await db.log_edit(
+        await asyncio.wait_for(db.log_edit(
             db_pool, payload.message_id, payload.data["content"], edited_at,
             message=message_fields_from_raw(payload.data),
-        )
+        ), LOG_WRITE_TIMEOUT)
     except Exception as e:
         print(f"Error logging edit of message {payload.message_id}: {e}")
 

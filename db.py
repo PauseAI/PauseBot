@@ -31,6 +31,11 @@ async def save_snapshot(pool, guild_id, data):
     )
 
 
+async def latest_snapshot_time(pool, guild_id):
+    """When the newest snapshot was taken, without pulling its (large) data."""
+    return await pool.fetchval("SELECT max(taken_at) FROM server_snapshots WHERE guild_id = $1", guild_id)
+
+
 async def latest_snapshot(pool, guild_id):
     return await pool.fetchrow(
         "SELECT id, guild_id, taken_at, data FROM server_snapshots WHERE guild_id = $1 ORDER BY taken_at DESC LIMIT 1",
@@ -55,6 +60,9 @@ async def log_edit(pool, message_id, content, edited_at, message=None):
     """Records the old content and stores the new. Returns the content before the edit, or None if
     the message isn't logged or its text didn't change (e.g. Discord adding a link embed).
 
+    `edited_at` is None when Discord updated the message without an edit (e.g. a link unfurl).
+    Edit events can be handled out of order, so one older than the stored edit is dropped.
+
     `message` holds the log_message fields other than content (guild_id, channel_id, author_id,
     attachments, created_at). With it, an edit that arrives before its message was logged stores
     the message with the edited content; log_message then leaves that row alone."""
@@ -73,20 +81,23 @@ async def log_edit(pool, message_id, content, edited_at, message=None):
                 )
                 if inserted is not None:
                     return None
-            before = await conn.fetchval(
-                "SELECT content FROM message_log WHERE message_id = $1 FOR UPDATE", message_id
+            row = await conn.fetchrow(
+                "SELECT content, edited_at FROM message_log WHERE message_id = $1 FOR UPDATE", message_id
             )
-            if before is None or before == content:
+            if row is None or row["content"] == content:
                 return None
+            if edited_at is not None and row["edited_at"] is not None and edited_at <= row["edited_at"]:
+                return None
+            # A text change always carries an edit time; now() only guards the NOT NULL column
             await conn.execute(
-                "INSERT INTO message_edits (message_id, content_before, edited_at) VALUES ($1, $2, $3)",
-                message_id, before, edited_at,
+                "INSERT INTO message_edits (message_id, content_before, edited_at) VALUES ($1, $2, coalesce($3, now()))",
+                message_id, row["content"], edited_at,
             )
             await conn.execute(
-                "UPDATE message_log SET content = $2, edited_at = $3 WHERE message_id = $1",
+                "UPDATE message_log SET content = $2, edited_at = coalesce($3, now()) WHERE message_id = $1",
                 message_id, content, edited_at,
             )
-            return before
+            return row["content"]
 
 
 async def log_delete(pool, message_ids, deleted_at):
@@ -114,13 +125,19 @@ async def get_edits(pool, message_id):
 
 # ── Retention ─────────────────────────────────────────────────────────────────
 
+# A day's expired messages and their cascaded edits can take far longer than the pool's 10s default
+PRUNE_TIMEOUT = 600
+
+
 async def prune(pool, days=RETENTION_DAYS):
     """Deletes snapshots and messages older than `days`. Returns (snapshots, messages) removed."""
     snapshots = await pool.execute(
-        "DELETE FROM server_snapshots WHERE taken_at < now() - make_interval(days => $1)", days
+        "DELETE FROM server_snapshots WHERE taken_at < now() - make_interval(days => $1)", days,
+        timeout=PRUNE_TIMEOUT,
     )
     messages = await pool.execute(
-        "DELETE FROM message_log WHERE created_at < now() - make_interval(days => $1)", days
+        "DELETE FROM message_log WHERE created_at < now() - make_interval(days => $1)", days,
+        timeout=PRUNE_TIMEOUT,
     )
     # execute() returns the command tag, e.g. "DELETE 3"
     return int(snapshots.split()[-1]), int(messages.split()[-1])

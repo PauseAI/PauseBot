@@ -149,3 +149,27 @@ async def test_edit_with_message_fields_still_records_history_when_logged(pool):
     assert await db.log_edit(pool, 1, "v2", NOW, message=fields()) == "v1"
     assert [e["content_before"] for e in await db.get_edits(pool, 1)] == ["v1"]
 
+
+
+async def test_out_of_order_edit_does_not_overwrite_newer(pool):
+    await log(pool, 1, content="v1")
+    t1, t2 = NOW + datetime.timedelta(seconds=1), NOW + datetime.timedelta(seconds=2)
+    assert await db.log_edit(pool, 1, "v3", t2) == "v1"
+    assert await db.log_edit(pool, 1, "v2", t1) is None
+    row = await db.get_message(pool, 1)
+    assert (row["content"], row["edited_at"]) == ("v3", t2)
+    assert [e["content_before"] for e in await db.get_edits(pool, 1)] == ["v1"]
+
+
+async def test_unfurl_before_insert_is_not_marked_edited(pool):
+    # Discord's link-unfurl MESSAGE_UPDATE has the full message but no edited_timestamp
+    assert await db.log_edit(pool, 1, "see https://pauseai.info", None, message=fields()) is None
+    row = await db.get_message(pool, 1)
+    assert row["content"] == "see https://pauseai.info" and row["edited_at"] is None
+
+
+async def test_latest_snapshot_time(pool):
+    assert await db.latest_snapshot_time(pool, GUILD) is None
+    await db.save_snapshot(pool, GUILD, {"n": 1})
+    latest = await db.latest_snapshot(pool, GUILD)
+    assert await db.latest_snapshot_time(pool, GUILD) == latest["taken_at"]

@@ -160,3 +160,12 @@ async def test_b2_cleanup_runs_after_successful_upload(pool, dsn, tmp_path, fake
     monkeypatch.setattr(backup, "upload_to_b2", lambda path: True)
     assert backup.run_backup_job(dsn, tmp_path) == {"local_success": True, "b2_success": True}
     assert fake_b2["deleted"] == ["backups/pausebot-old.dump"]
+
+
+def test_failed_backup_with_keyword_dsn_does_not_log_password(tmp_path, capfd):
+    # libpq_args can't split a key=value DSN, so the error output itself must leave out the command
+    bad_dsn = "host=localhost port=5433 user=postgres password=sup3rsecret dbname=does_not_exist_test"
+    assert backup.run_backup_job(bad_dsn, tmp_path)["local_success"] is False
+    out, err = capfd.readouterr()
+    assert "psql exited with status" in err
+    assert "sup3rsecret" not in out + err

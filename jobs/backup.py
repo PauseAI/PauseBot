@@ -202,6 +202,11 @@ def run_backup_job(dsn, backup_dir=None):
     try:
         check_client_version(dsn)
         backup_path = create_local_backup(dsn, backup_dir)
+    except subprocess.CalledProcessError as e:
+        # Not str(e): that includes the command line, and with it any DSN form libpq_args can't split
+        detail = f": {e.stderr.strip()}" if e.stderr else ""
+        print(f"[BACKUP] {e.cmd[0]} exited with status {e.returncode}{detail}", file=sys.stderr)
+        return {"local_success": False, "b2_success": False}
     except Exception as e:
         print(f"[BACKUP] pg_dump failed: {e}", file=sys.stderr)
         return {"local_success": False, "b2_success": False}
