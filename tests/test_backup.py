@@ -42,7 +42,7 @@ async def test_dump_contains_schema_and_data(pool, dsn, tmp_path):
 async def test_run_backup_job_without_targets(pool, dsn, tmp_path, capsys):
     await seed(pool)
     assert backup.run_backup_job(dsn, [], tmp_path) == {"local_success": True, "targets": {}}
-    assert "No backup targets configured" in capsys.readouterr().out
+    assert "No valid backup targets configured" in capsys.readouterr().out
     assert len(list(tmp_path.glob("pausebot-*.dump"))) == 1
 
 
