@@ -8,9 +8,11 @@ import csv
 import hmac
 import io
 import re
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from aiohttp import web
+import db
+from snapshot import take_snapshot
 # Load environment variables from .env file
 load_dotenv()
 
@@ -19,6 +21,7 @@ MAILERSEND_API_KEY = os.getenv('MAILERSEND_API_KEY')
 AIRTABLE_PERSONAL_ACCESS_TOKEN = os.getenv('AIRTABLE_PERSONAL_ACCESS_TOKEN')
 WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')
 PORT = int(os.getenv('PORT', 8080))
+DATABASE_URL = os.getenv('DATABASE_URL')
 
 ALLOWED_EXPORT_ROLE_ID = 1409324452545822793
 
@@ -66,12 +69,16 @@ COUNTRY_DATA = {
 
 intents = discord.Intents.default()
 intents.members = True # Required for on_member_join!
+intents.message_content = True # Required for the message log (privileged: enable it in the Developer Portal)
 
 from discord import app_commands
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 # Shared aiohttp session — created once on startup, reused for all HTTP calls
 http_session: aiohttp.ClientSession | None = None
+
+# Postgres pool for server snapshots and the message log; stays None if DATABASE_URL is unset or unreachable
+db_pool = None
 
 # Permissions a role must NOT have for the bot to grant/re-grant it automatically
 # (via the webhook, or via Airtable-driven role restoration), so a leaked
@@ -154,12 +161,56 @@ async def start_web_server():
     print(f"Web server started on port {PORT}")
 
 async def setup_hook():
-    global http_session
+    global http_session, db_pool
     http_session = aiohttp.ClientSession()
     bot.loop.create_task(start_web_server())
+    if DATABASE_URL:
+        # A database outage shouldn't take onboarding down with it, so carry on without one
+        pool = None
+        try:
+            pool = await db.create_pool(DATABASE_URL)
+            await db.apply_schema(pool)
+            db_pool = pool
+            daily_snapshot_and_prune.start()
+        except Exception as e:
+            db_pool = None
+            if pool:
+                await pool.close()
+            print(f"Database unavailable, running without snapshots or message log: {e}")
     await bot.tree.sync()
 
 bot.setup_hook = setup_hook
+
+def is_active_guild(guild_id):
+    """Dev mode only acts on test servers, production only on the PauseAI server."""
+    if DEVELOPER_MODE:
+        return guild_id is not None and guild_id != PAUSEAI_SERVER_ID
+    return guild_id == PAUSEAI_SERVER_ID
+
+@tasks.loop(hours=24)
+async def daily_snapshot_and_prune():
+    """Replaces Xenon backups: snapshot each server's structure, and drop anything past 30 days."""
+    for guild in bot.guilds:
+        if not is_active_guild(guild.id):
+            continue
+        try:
+            # The loop also runs on every restart, so skip servers snapshotted recently
+            latest = await db.latest_snapshot_time(db_pool, guild.id)
+            if latest and datetime.datetime.now(datetime.UTC) - latest < datetime.timedelta(hours=20):
+                continue
+            snapshot_id = await db.save_snapshot(db_pool, guild.id, await take_snapshot(guild))
+            print(f"Saved snapshot {snapshot_id} of {guild.name}.")
+        except Exception as e:
+            print(f"Error snapshotting {guild.name}: {e}")
+    try:
+        snapshots, messages = await db.prune(db_pool)
+        print(f"Pruned {snapshots} snapshot(s) and {messages} logged message(s) older than {db.RETENTION_DAYS} days.")
+    except Exception as e:
+        print(f"Error pruning old snapshots and messages: {e}")
+
+@daily_snapshot_and_prune.before_loop
+async def before_daily_snapshot():
+    await bot.wait_until_ready()
 
 
 async def find_airtable_record(discord_id):
@@ -812,6 +863,13 @@ async def on_message(message):
         if not DEVELOPER_MODE and message.guild.id != PAUSEAI_SERVER_ID:
             return
 
+    # Replaces Quark: keep every server message for 30 days. Runs in the background so a slow
+    # database never holds up the moderator ping or commands below.
+    if db_pool and message.guild:
+        task = asyncio.create_task(log_message_safely(message))
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+
     # If YAGPDB sends a message in the moderators channel, ping the moderators role in a thread (cooldown of 60s to prevent spam)
     if message.author.id == YAGPDB_USER_ID and message.channel.id == MODERATORS_CHANNEL_ID:
         global last_yagpdb_alert_time
@@ -826,6 +884,90 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
+# Holds references to fire-and-forget tasks so they aren't garbage collected mid-run
+background_tasks = set()
+
+# Upper bound on one log write, including waiting for a free connection, so a hung database
+# can't pile up a task per message
+LOG_WRITE_TIMEOUT = 15
+
+def attachments_json(raw_attachments):
+    """What message_log stores per attachment, from raw gateway dicts (Attachment.to_dict() gives the same shape)."""
+    return [
+        {"id": int(a["id"]), "filename": a.get("filename"), "url": a.get("url"),
+         "content_type": a.get("content_type"), "size": a.get("size")}
+        for a in raw_attachments
+    ]
+
+async def log_message_safely(message):
+    try:
+        await asyncio.wait_for(db.log_message(
+            db_pool,
+            message_id=message.id,
+            guild_id=message.guild.id,
+            channel_id=message.channel.id,
+            author_id=message.author.id,
+            content=message.content,
+            attachments=attachments_json(a.to_dict() for a in message.attachments),
+            created_at=message.created_at,
+        ), LOG_WRITE_TIMEOUT)
+    except Exception as e:
+        print(f"Error logging message {message.id}: {e!r}")
+
+def message_fields_from_raw(data):
+    """The log_message fields of a raw gateway message, or None if the edit payload is partial."""
+    try:
+        return {
+            "guild_id": int(data["guild_id"]),
+            "channel_id": int(data["channel_id"]),
+            "author_id": int(data["author"]["id"]),
+            "attachments": attachments_json(data.get("attachments", [])),
+            "created_at": datetime.datetime.fromisoformat(data["timestamp"]),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+# Raw events fire even for messages that aren't in discord.py's message cache
+@bot.event
+async def on_raw_message_edit(payload):
+    if not db_pool or not is_active_guild(payload.guild_id):
+        return
+    # Edits that only add embeds arrive without content
+    if "content" not in payload.data:
+        return
+    # on_message never logs the bot's own messages, so neither do edits
+    if payload.data.get("author", {}).get("id") == str(bot.user.id):
+        return
+    # Link unfurls and embed updates arrive with no edited_timestamp; they aren't edits
+    edited = payload.data.get("edited_timestamp")
+    edited_at = datetime.datetime.fromisoformat(edited) if edited else None
+    try:
+        # Passing the message's fields lets an edit that beats its on_message insert still be logged
+        await asyncio.wait_for(db.log_edit(
+            db_pool, payload.message_id, payload.data["content"], edited_at,
+            message=message_fields_from_raw(payload.data),
+        ), LOG_WRITE_TIMEOUT)
+    except Exception as e:
+        print(f"Error logging edit of message {payload.message_id}: {e}")
+
+@bot.event
+async def on_raw_message_delete(payload):
+    if not db_pool or not is_active_guild(payload.guild_id):
+        return
+    try:
+        await db.log_delete(db_pool, [payload.message_id], datetime.datetime.now(datetime.UTC))
+    except Exception as e:
+        print(f"Error logging deletion of message {payload.message_id}: {e}")
+
+@bot.event
+async def on_raw_bulk_message_delete(payload):
+    if not db_pool or not is_active_guild(payload.guild_id):
+        return
+    try:
+        await db.log_delete(db_pool, payload.message_ids, datetime.datetime.now(datetime.UTC))
+    except Exception as e:
+        print(f"Error logging bulk deletion in channel {payload.channel_id}: {e}")
+
 if __name__ == "__main__":
     if not DISCORD_TOKEN or not MAILERSEND_API_KEY:
         print("Error: DISCORD_TOKEN or MAILERSEND_API_KEY is not set in the environment.")
@@ -834,4 +976,6 @@ if __name__ == "__main__":
             print("Warning: Airtable variables are not fully set. The bot will skip posting to Airtable.")
         if not ONBOARDING_PIPELINE_CHANNEL_ID:
             print("Warning: ONBOARDING_PIPELINE_CHANNEL_ID is not set. The bot will not send messages in Discord.")
+        if not DATABASE_URL:
+            print("Warning: DATABASE_URL is not set. The bot will skip server snapshots and the message log.")
         bot.run(DISCORD_TOKEN)
