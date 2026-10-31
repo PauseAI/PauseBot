@@ -1,5 +1,5 @@
-"""Exercises pg_dump and local retention against the test database. The B2 upload itself isn't
-tested here; it needs real credentials and gets checked against a real bucket."""
+"""Exercises pg_dump and local retention against the test database. Bucket uploads are in
+test_targets.py."""
 import datetime
 import os
 import subprocess
@@ -7,12 +7,6 @@ import time
 import pytest
 import db
 from jobs import backup
-
-
-@pytest.fixture(autouse=True)
-def no_b2(monkeypatch):
-    for key in ("B2_KEY_ID", "B2_APP_KEY", "B2_BUCKET_NAME"):
-        monkeypatch.delenv(key, raising=False)
 
 
 async def seed(pool):
@@ -45,15 +39,16 @@ async def test_dump_contains_schema_and_data(pool, dsn, tmp_path):
     assert "snapshot in dump" in sql
 
 
-async def test_run_backup_job_without_b2(pool, dsn, tmp_path):
+async def test_run_backup_job_without_targets(pool, dsn, tmp_path, capsys):
     await seed(pool)
-    assert backup.run_backup_job(dsn, tmp_path) == {"local_success": True, "b2_success": False}
+    assert backup.run_backup_job(dsn, [], tmp_path) == {"local_success": True, "targets": {}}
+    assert "No backup targets configured" in capsys.readouterr().out
     assert len(list(tmp_path.glob("pausebot-*.dump"))) == 1
 
 
 def test_run_backup_job_reports_dump_failure(tmp_path):
     bad_dsn = "postgresql://postgres:postgres@localhost:5433/does_not_exist_test"
-    assert backup.run_backup_job(bad_dsn, tmp_path) == {"local_success": False, "b2_success": False}
+    assert backup.run_backup_job(bad_dsn, [], tmp_path) == {"local_success": False, "targets": {}}
 
 
 def test_cleanup_removes_only_old_dumps(tmp_path):
@@ -74,10 +69,6 @@ def test_cleanup_removes_only_old_dumps(tmp_path):
 def test_backup_dir_uses_railway_volume(monkeypatch, tmp_path):
     monkeypatch.setenv("RAILWAY_VOLUME_MOUNT_PATH", str(tmp_path))
     assert backup.local_backup_dir() == tmp_path / "backups"
-
-
-def test_upload_skipped_when_b2_not_configured(tmp_path):
-    assert backup.upload_to_b2(tmp_path / "pausebot-x.dump") is False
 
 
 async def test_dump_restores_into_empty_database(pool, dsn, tmp_path):
@@ -115,57 +106,16 @@ def test_libpq_args_moves_password_to_env():
 
 def test_failed_backup_does_not_log_password(tmp_path, capfd):
     bad_dsn = "postgresql://postgres:sup3rsecret@localhost:5433/does_not_exist_test"
-    assert backup.run_backup_job(bad_dsn, tmp_path)["local_success"] is False
+    assert backup.run_backup_job(bad_dsn, [], tmp_path)["local_success"] is False
     out, err = capfd.readouterr()
     assert "does_not_exist_test" in out + err
     assert "sup3rsecret" not in out + err
 
 
-# ── B2 retention (B2 calls stubbed; the real API is checked against a bucket) ─
-
-@pytest.fixture
-def fake_b2(monkeypatch):
-    for key in ("B2_KEY_ID", "B2_APP_KEY", "B2_BUCKET_NAME"):
-        monkeypatch.setenv(key, "x")
-    calls = {"prefixes": [], "deleted": []}
-    old = (time.time() - 31 * 24 * 60 * 60) * 1000
-    monkeypatch.setattr(backup, "b2_authorize", lambda: {})
-    monkeypatch.setattr(backup, "b2_get_bucket_id", lambda auth, name: "bucket")
-
-    def list_files(auth, bucket_id, prefix):
-        calls["prefixes"].append(prefix)
-        return [
-            {"fileId": "1", "fileName": "backups/pausebot-old.dump", "uploadTimestamp": old},
-            {"fileId": "2", "fileName": "backups/pausebot-new.dump", "uploadTimestamp": time.time() * 1000},
-        ]
-
-    monkeypatch.setattr(backup, "b2_list_files", list_files)
-    monkeypatch.setattr(backup, "b2_delete_file", lambda auth, file_id, name: calls["deleted"].append(name))
-    return calls
-
-
-def test_b2_cleanup_only_touches_pausebot_dumps(fake_b2):
-    backup.cleanup_b2_backups()
-    assert fake_b2["prefixes"] == ["backups/pausebot-"]
-    assert fake_b2["deleted"] == ["backups/pausebot-old.dump"]
-
-
-async def test_b2_cleanup_skipped_when_upload_fails(pool, dsn, tmp_path, fake_b2, monkeypatch):
-    monkeypatch.setattr(backup, "upload_to_b2", lambda path: False)
-    assert backup.run_backup_job(dsn, tmp_path) == {"local_success": True, "b2_success": False}
-    assert fake_b2["deleted"] == [] and fake_b2["prefixes"] == []
-
-
-async def test_b2_cleanup_runs_after_successful_upload(pool, dsn, tmp_path, fake_b2, monkeypatch):
-    monkeypatch.setattr(backup, "upload_to_b2", lambda path: True)
-    assert backup.run_backup_job(dsn, tmp_path) == {"local_success": True, "b2_success": True}
-    assert fake_b2["deleted"] == ["backups/pausebot-old.dump"]
-
-
 def test_failed_backup_with_keyword_dsn_does_not_log_password(tmp_path, capfd):
     # libpq_args can't split a key=value DSN, so the error output itself must leave out the command
     bad_dsn = "host=localhost port=5433 user=postgres password=sup3rsecret dbname=does_not_exist_test"
-    assert backup.run_backup_job(bad_dsn, tmp_path)["local_success"] is False
+    assert backup.run_backup_job(bad_dsn, [], tmp_path)["local_success"] is False
     out, err = capfd.readouterr()
     assert "psql exited with status" in err
     assert "sup3rsecret" not in out + err

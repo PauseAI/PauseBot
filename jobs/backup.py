@@ -1,96 +1,135 @@
-"""Daily off-site backup of the whole database: pg_dump, upload to Backblaze B2, prune old dumps.
+"""Daily off-site backup of the whole database: pg_dump, then upload to every configured bucket.
 
 Runs as its own Railway cron service (Dockerfile.backup, railway.backup.json), ported from
-catalyse's jobs/backup.ts. Needs DATABASE_URL, plus B2_KEY_ID, B2_APP_KEY and B2_BUCKET_NAME
-for the upload; without those it only keeps the local dump.
+catalyse's jobs/backup.ts. Needs DATABASE_URL. Each provider below is backed up to when its
+BACKUP_<PROVIDER>_* variables are set; with none set it only keeps the local dump. Use different
+providers rather than two buckets at one, so one provider's outage or account problem can't take
+out every copy.
 """
-import base64
 import datetime
-import hashlib
-import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
+import boto3
+from botocore.config import Config
 
 LOCAL_RETENTION_DAYS = 7
-B2_RETENTION_DAYS = 30
+BUCKET_RETENTION_DAYS = 30
 FILE_PREFIX = "pausebot-"
+BUCKET_PREFIX = f"backups/{FILE_PREFIX}"
 
 
 def timestamp():
     return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d_%H%M%S")
 
 
-# ── B2 API ────────────────────────────────────────────────────────────────────
+# ── Targets ───────────────────────────────────────────────────────────────────
 
-def _b2_request(url, headers, body):
-    request = urllib.request.Request(url, data=body, headers=headers, method="POST" if body is not None else "GET")
+# Per provider: the one variable that says where its buckets live, and how that gives the
+# S3 endpoint and signing region. Everything else is the same for every provider.
+PROVIDERS = {
+    "b2": ("REGION", lambda region: (f"https://s3.{region}.backblazeb2.com", region)),
+    "r2": ("ACCOUNT_ID", lambda account_id: (f"https://{account_id}.r2.cloudflarestorage.com", "auto")),
+    "s3": ("REGION", lambda region: (None, region)),
+}
+
+
+class ConfigError(Exception):
+    pass
+
+
+@dataclass
+class Target:
+    name: str
+    bucket: str
+    endpoint: str | None
+    region: str
+    key_id: str
+    secret: str = field(repr=False)  # Keep it out of any log line that prints a Target
+
+
+def load_targets(env=None):
+    """The providers whose BACKUP_<PROVIDER>_* variables are set. A provider with only some of
+    them set raises ConfigError, so a typo fails the run instead of quietly skipping a bucket."""
+    env = os.environ if env is None else env
+    targets, missing = [], []
+    for name, (location_var, endpoint_for) in PROVIDERS.items():
+        names = [f"BACKUP_{name.upper()}_{v}" for v in (location_var, "BUCKET", "KEY_ID", "SECRET")]
+        values = [env.get(n, "").strip() for n in names]
+        if not any(values):
+            continue
+        missing += [n for n, v in zip(names, values) if not v]
+        if all(values):
+            location, bucket, key_id, secret = values
+            endpoint, region = endpoint_for(location)
+            targets.append(Target(name, bucket, endpoint, region, key_id, secret))
+    if missing:
+        raise ConfigError(f"Missing {', '.join(missing)}")
+    return targets
+
+
+def make_client(target):
+    return boto3.client(
+        "s3",
+        endpoint_url=target.endpoint,
+        region_name=target.region,
+        aws_access_key_id=target.key_id,
+        aws_secret_access_key=target.secret,
+        # boto3's default upload checksums aren't supported by every S3-compatible provider
+        config=Config(
+            request_checksum_calculation="when_required",
+            response_checksum_validation="when_required",
+            retries={"max_attempts": 5, "mode": "standard"},
+        ),
+    )
+
+
+def expired_keys(objects, now=None):
+    """Keys of our dumps older than BUCKET_RETENTION_DAYS, from list_objects_v2 entries."""
+    now = now or datetime.datetime.now(datetime.UTC)
+    cutoff = now - datetime.timedelta(days=BUCKET_RETENTION_DAYS)
+    return [o["Key"] for o in objects if o["Key"].startswith(BUCKET_PREFIX) and o["LastModified"] < cutoff]
+
+
+def cleanup_target(client, target, now=None):
+    # Only our own dumps, in case the bucket also holds another service's backups
+    objects = []
+    for page in client.get_paginator("list_objects_v2").paginate(Bucket=target.bucket, Prefix=BUCKET_PREFIX):
+        objects += page.get("Contents", [])
+    keys = expired_keys(objects, now)
+    for key in keys:
+        client.delete_object(Bucket=target.bucket, Key=key)
+    if keys:
+        print(f"[BACKUP] {target.name}: removed {len(keys)} backup(s) older than {BUCKET_RETENTION_DAYS} days")
+
+
+def backup_to_target(target, backup_path, client=None):
+    """Uploads the dump, then prunes old ones. Returns whether the upload landed."""
+    key = f"backups/{backup_path.name}"
     try:
-        with urllib.request.urlopen(request, timeout=300) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"{url} failed: {e.code} {e.read().decode(errors='replace')}") from None
+        client = client or make_client(target)
+        # Streams from disk, in parts for large files
+        client.upload_file(str(backup_path), target.bucket, key)
+        print(f"[BACKUP] {target.name}: uploaded {key} to {target.bucket}")
+    except Exception as e:
+        print(f"[BACKUP] {target.name}: upload failed: {e}", file=sys.stderr)
+        # If uploads keep failing unnoticed, pruning would empty the bucket within 30 days
+        print(f"[BACKUP] {target.name}: skipping cleanup because the upload failed", file=sys.stderr)
+        return False
+    try:
+        cleanup_target(client, target)
+    except Exception as e:
+        print(f"[BACKUP] {target.name}: cleanup failed: {e}", file=sys.stderr)
+    return True
 
 
-def _b2_api(auth, call, payload):
-    return _b2_request(
-        f"{auth['apiUrl']}/b2api/v2/{call}",
-        {"Authorization": auth["authorizationToken"], "Content-Type": "application/json"},
-        json.dumps(payload).encode(),
-    )
-
-
-def b2_authorize():
-    credentials = base64.b64encode(f"{os.environ['B2_KEY_ID']}:{os.environ['B2_APP_KEY']}".encode()).decode()
-    return _b2_request(
-        "https://api.backblazeb2.com/b2api/v2/b2_authorize_account",
-        {"Authorization": f"Basic {credentials}"},
-        None,
-    )
-
-
-def b2_get_bucket_id(auth, bucket_name):
-    buckets = _b2_api(auth, "b2_list_buckets", {"accountId": auth["accountId"], "bucketName": bucket_name}).get("buckets")
-    if not buckets:
-        raise RuntimeError(f"Bucket '{bucket_name}' not found")
-    return buckets[0]["bucketId"]
-
-
-def b2_upload_file(auth, bucket_id, file_name, file_data):
-    upload = _b2_api(auth, "b2_get_upload_url", {"bucketId": bucket_id})
-    return _b2_request(
-        upload["uploadUrl"],
-        {
-            "Authorization": upload["authorizationToken"],
-            "X-Bz-File-Name": file_name,
-            "Content-Type": "application/octet-stream",
-            "Content-Length": str(len(file_data)),
-            "X-Bz-Content-Sha1": hashlib.sha1(file_data).hexdigest(),
-        },
-        file_data,
-    )
-
-
-def b2_list_files(auth, bucket_id, prefix):
-    return _b2_api(auth, "b2_list_file_names", {"bucketId": bucket_id, "prefix": prefix, "maxFileCount": 1000})["files"]
-
-
-def b2_delete_file(auth, file_id, file_name):
-    _b2_api(auth, "b2_delete_file_version", {"fileId": file_id, "fileName": file_name})
-
-
-# ── Backup logic ──────────────────────────────────────────────────────────────
-
-def is_b2_configured():
-    return all(os.environ.get(k) for k in ("B2_KEY_ID", "B2_APP_KEY", "B2_BUCKET_NAME"))
-
+# ── Dump ──────────────────────────────────────────────────────────────────────
 
 def local_backup_dir():
     # Dumps live on the volume when Railway provides one, so the last week survives a redeploy.
@@ -160,43 +199,8 @@ def cleanup_local_backups(backup_dir):
         print(f"[BACKUP] Removed {removed} local backup(s) older than {LOCAL_RETENTION_DAYS} days")
 
 
-def upload_to_b2(backup_path):
-    if not is_b2_configured():
-        print("[BACKUP] B2 not configured, skipping cloud upload")
-        return False
-    try:
-        auth = b2_authorize()
-        bucket_id = b2_get_bucket_id(auth, os.environ["B2_BUCKET_NAME"])
-        file_name = f"backups/{backup_path.name}"
-        file_data = backup_path.read_bytes()
-        result = b2_upload_file(auth, bucket_id, file_name, file_data)
-        print(f"[BACKUP] Uploaded to B2: {file_name} ({result.get('contentLength', len(file_data)) // 1024} KB)")
-        return True
-    except Exception as e:
-        print(f"[BACKUP] B2 upload failed: {e}", file=sys.stderr)
-        return False
-
-
-def cleanup_b2_backups():
-    if not is_b2_configured():
-        return
-    try:
-        auth = b2_authorize()
-        bucket_id = b2_get_bucket_id(auth, os.environ["B2_BUCKET_NAME"])
-        cutoff_ms = (time.time() - B2_RETENTION_DAYS * 24 * 60 * 60) * 1000
-        removed = 0
-        # Only our own dumps, in case the bucket is shared with another service's backups/
-        for f in b2_list_files(auth, bucket_id, f"backups/{FILE_PREFIX}"):
-            if f["uploadTimestamp"] < cutoff_ms:
-                b2_delete_file(auth, f["fileId"], f["fileName"])
-                removed += 1
-        if removed:
-            print(f"[BACKUP] Removed {removed} B2 backup(s) older than {B2_RETENTION_DAYS} days")
-    except Exception as e:
-        print(f"[BACKUP] B2 cleanup failed: {e}", file=sys.stderr)
-
-
-def run_backup_job(dsn, backup_dir=None):
+def run_backup_job(dsn, targets, backup_dir=None):
+    """Returns {"local_success": bool, "targets": {name: uploaded}}."""
     backup_dir = backup_dir or local_backup_dir()
     print(f"[BACKUP] Starting backup at {datetime.datetime.now(datetime.UTC).isoformat()}")
     try:
@@ -206,19 +210,18 @@ def run_backup_job(dsn, backup_dir=None):
         # Not str(e): that includes the command line, and with it any DSN form libpq_args can't split
         detail = f": {e.stderr.strip()}" if e.stderr else ""
         print(f"[BACKUP] {e.cmd[0]} exited with status {e.returncode}{detail}", file=sys.stderr)
-        return {"local_success": False, "b2_success": False}
+        return {"local_success": False, "targets": {}}
     except Exception as e:
         print(f"[BACKUP] pg_dump failed: {e}", file=sys.stderr)
-        return {"local_success": False, "b2_success": False}
-    b2_success = upload_to_b2(backup_path)
+        return {"local_success": False, "targets": {}}
+    if not targets:
+        print("[BACKUP] No backup targets configured, keeping the local dump only")
+    # One provider failing doesn't stop the others
+    results = {t.name: backup_to_target(t, backup_path) for t in targets}
     cleanup_local_backups(backup_dir)
-    # If uploads keep failing unnoticed, pruning would empty the bucket within 30 days
-    if b2_success:
-        cleanup_b2_backups()
-    elif is_b2_configured():
-        print("[BACKUP] Skipping B2 cleanup because the upload failed", file=sys.stderr)
-    print("[BACKUP] Backup cycle complete")
-    return {"local_success": True, "b2_success": b2_success}
+    if targets:
+        print(f"[BACKUP] Done: {sum(results.values())} of {len(targets)} targets succeeded")
+    return {"local_success": True, "targets": results}
 
 
 if __name__ == "__main__":
@@ -226,11 +229,15 @@ if __name__ == "__main__":
         from dotenv import load_dotenv
         load_dotenv()
     except ImportError:
-        pass  # The cron image has no Python packages; Railway sets the env directly
+        pass  # The cron image only installs boto3; Railway sets the env directly
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         sys.exit("[BACKUP] DATABASE_URL is not set")
-    result = run_backup_job(dsn)
-    # Fail the cron run if the dump failed, or if B2 is set up but the upload didn't land
-    if not result["local_success"] or (is_b2_configured() and not result["b2_success"]):
+    try:
+        targets = load_targets()
+    except ConfigError as e:
+        sys.exit(f"[BACKUP] {e}")
+    result = run_backup_job(dsn, targets)
+    # Fail the cron run if the dump failed or any bucket didn't get it
+    if not result["local_success"] or not all(result["targets"].values()):
         sys.exit(1)
