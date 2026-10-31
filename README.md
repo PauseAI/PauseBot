@@ -12,7 +12,7 @@ PauseBot is a Discord bot designed to streamline the onboarding pipeline for Pau
 - **Role-based Logic**: Easily map new or existing Discord Role IDs to specific email addresses.
 - **Server Snapshots** (replacing Xenon): Once a day, saves the server's roles, channels and permission overwrites, member roles and nicknames, and bans to Postgres. Kept for 30 days.
 - **Message Log** (replacing Quark): Stores every server message, its edits and when it was deleted in Postgres. Kept for 30 days from when the message was sent.
-- **Off-site Database Backups**: A separate daily cron job dumps the whole database and uploads it to Backblaze B2, keeping 30 days of dumps.
+- **Off-site Database Backups**: A separate daily cron job dumps the whole database and uploads it to buckets at one or more providers (Backblaze B2, Cloudflare R2, AWS S3), keeping 30 days of dumps in each.
 
 ## Prerequisites
 
@@ -93,10 +93,20 @@ The message log needs the **Message Content** privileged intent, enabled under B
 `jobs/backup.py` runs as its own Railway cron service: create a service from this repo, set its config file path to `railway.backup.json` (builds `Dockerfile.backup`, runs daily at 03:00 UTC), and give it these variables:
 
 - `DATABASE_URL`: the same database as the bot.
-- `B2_KEY_ID`, `B2_APP_KEY`, `B2_BUCKET_NAME`: a Backblaze B2 application key with read, write and delete access to the bucket. Without them the job only keeps the local dump.
 - `RAILWAY_VOLUME_MOUNT_PATH` is set by Railway if you attach a volume, which keeps the last 7 days of dumps locally across redeploys.
+- Four variables for each provider you want a copy at, from the table below. Use different providers rather than two buckets at one, so one provider's outage or account problem can't take out every copy.
 
-Dumps are uploaded as `backups/pausebot-<timestamp>.dump` and deleted from B2 after 30 days. To restore one into a database:
+| Provider | Variables | The location value |
+|---|---|---|
+| Backblaze B2 | `BACKUP_B2_REGION`, `BACKUP_B2_BUCKET`, `BACKUP_B2_KEY_ID`, `BACKUP_B2_SECRET` | The part of the bucket's S3 endpoint after `s3.`, e.g. `eu-central-003` |
+| Cloudflare R2 | `BACKUP_R2_ACCOUNT_ID`, `BACKUP_R2_BUCKET`, `BACKUP_R2_KEY_ID`, `BACKUP_R2_SECRET` | The 32-character account ID on the R2 overview page; add `.eu` (or `.fedramp`) for a bucket created in that jurisdiction |
+| AWS S3 | `BACKUP_S3_REGION`, `BACKUP_S3_BUCKET`, `BACKUP_S3_KEY_ID`, `BACKUP_S3_SECRET` | The bucket's region, e.g. `eu-west-2` |
+
+Each key needs read, write, list and delete access to its bucket, including deleting old file versions (B2 buckets keep every version by default, and cleanup removes each one). On B2, use an application key, not the master key, since only application keys work with the S3 API. On AWS, the key's policy needs `s3:PutObject`, `s3:ListBucket`, `s3:ListBucketVersions`, `s3:DeleteObject` and `s3:DeleteObjectVersion` on the bucket.
+
+With no provider configured, the job keeps the local dump only. A provider with only some of its variables set, or a location value in the wrong form (such as a full URL), is reported and fails the cron run, but the dump and the uploads to the correctly configured providers still go ahead. Uploads to the providers run at the same time; one failing doesn't stop the others. A failed upload, or a failed cleanup of old dumps, fails the cron run so Railway shows it.
+
+Dumps are uploaded to each bucket as `backups/pausebot-<timestamp>.dump`. After a successful upload, dumps older than 30 days are deleted from that bucket; nothing else in the bucket is touched. To restore one into a database, download it from any of the buckets and run:
 
 ```bash
 pg_restore --clean --if-exists --no-owner --no-privileges --dbname "$DATABASE_URL" pausebot-<timestamp>.dump

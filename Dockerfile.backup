@@ -1,6 +1,6 @@
-# Image for the backup cron service (railway.backup.json). jobs/backup.py uses only the standard
-# library, so this carries Python and the Postgres client. Keep postgresql-client-N at or above the
-# Railway Postgres major version; the job refuses to run otherwise.
+# Image for the backup cron service (railway.backup.json): Python with boto3 for the bucket uploads,
+# and the Postgres client. Keep postgresql-client-N at or above the Railway Postgres major version;
+# the job refuses to run otherwise.
 FROM python:3.14-slim-trixie
 
 RUN apt-get update \
@@ -14,6 +14,8 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+COPY jobs/requirements.txt ./jobs/requirements.txt
+RUN pip install --no-cache-dir -r jobs/requirements.txt
 COPY jobs/backup.py ./jobs/backup.py
 
 CMD ["python", "jobs/backup.py"]
