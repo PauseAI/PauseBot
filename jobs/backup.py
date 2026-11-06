@@ -137,18 +137,24 @@ def make_client(target):
 
 
 def list_dumps(client, target):
-    """Every stored copy of our dumps as {Key, VersionId, LastModified}. On a versioned bucket
-    (B2 keeps all versions by default) that includes old versions and hide/delete markers, which
-    a plain listing doesn't show and a plain delete doesn't remove."""
+    """Every stored copy of our dumps as {Key, VersionId, LastModified, Size, Current}. On a
+    versioned bucket (B2 keeps all versions by default) that includes old versions and hide/delete
+    markers, which a plain listing doesn't show and a plain delete doesn't remove. Current is true
+    for the one copy of a file that a plain download gets, so false for all of those."""
     # Only our own dumps, in case the bucket also holds another service's backups
     if target.versioned:
         for page in client.get_paginator("list_object_versions").paginate(Bucket=target.bucket, Prefix=BUCKET_PREFIX):
-            for v in page.get("Versions", []) + page.get("DeleteMarkers", []):
-                yield {"Key": v["Key"], "VersionId": v["VersionId"], "LastModified": v["LastModified"]}
+            for v in page.get("Versions", []):
+                yield {"Key": v["Key"], "VersionId": v["VersionId"], "LastModified": v["LastModified"],
+                       "Size": v.get("Size"), "Current": v.get("IsLatest", False)}
+            for m in page.get("DeleteMarkers", []):
+                yield {"Key": m["Key"], "VersionId": m["VersionId"], "LastModified": m["LastModified"],
+                       "Size": None, "Current": False}
     else:
         for page in client.get_paginator("list_objects_v2").paginate(Bucket=target.bucket, Prefix=BUCKET_PREFIX):
             for o in page.get("Contents", []):
-                yield {"Key": o["Key"], "VersionId": None, "LastModified": o["LastModified"]}
+                yield {"Key": o["Key"], "VersionId": None, "LastModified": o["LastModified"],
+                       "Size": o.get("Size"), "Current": True}
 
 
 def expired(dumps, now=None):
