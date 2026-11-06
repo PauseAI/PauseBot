@@ -1,6 +1,6 @@
 """Daily off-site backup of the whole database: pg_dump, then upload to every configured bucket.
 
-Runs as its own Railway cron service (Dockerfile.backup, railway.backup.json), ported from
+Runs as its own Railway cron service (Dockerfile.backup), ported from
 catalyse's jobs/backup.ts. Needs DATABASE_URL. Each provider below is backed up to when its
 BACKUP_<PROVIDER>_* variables are set; with none set it only keeps the local dump. Use different
 providers rather than two buckets at one, so one provider's outage or account problem can't take

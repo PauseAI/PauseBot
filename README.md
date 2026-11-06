@@ -90,7 +90,14 @@ The message log needs the **Message Content** privileged intent, enabled under B
 
 ### Database backups
 
-`jobs/backup.py` runs as its own Railway cron service: create a service from this repo, set its config file path to `railway.backup.json` (builds `Dockerfile.backup`, runs daily at 03:00 UTC), and give it these variables:
+`jobs/backup.py` runs as its own Railway cron service, separate from the bot. The bot service stays on Railpack with no config. Railway has deprecated config files, so the backup service is set up by hand. Create a service from this repo and set these in its Settings:
+
+- **Builder**: Dockerfile, with the path `Dockerfile.backup`.
+- **Deploy > Cron Schedule**: `0 3 * * *` (daily at 03:00 UTC).
+- **Restart policy**: Never, so a failed run shows as failed instead of retrying.
+- **Watch Paths** (optional): `/jobs/**` and `/Dockerfile.backup`, so commits that only touch the bot don't rebuild it.
+
+Then give the backup service these variables. The `BACKUP_*` variables go on the backup service only, never on the bot service.
 
 - `DATABASE_URL`: the same database as the bot.
 - `RAILWAY_VOLUME_MOUNT_PATH` is set by Railway if you attach a volume, which keeps the last 7 days of dumps locally across redeploys.
