@@ -3,3 +3,5 @@ node_modules/
 .env
 __pycache__/
 *.pyc
+# Database dumps from jobs/fetch_backup.py: they contain members' messages
+/backups/

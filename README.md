@@ -113,8 +113,44 @@ Each key needs read, write, list and delete access to its bucket, including dele
 
 With no provider configured, the job keeps the local dump only. A provider with only some of its variables set, or a location value in the wrong form (such as a full URL), is reported and fails the cron run, but the dump and the uploads to the correctly configured providers still go ahead. Uploads to the providers run at the same time; one failing doesn't stop the others. A failed upload, or a failed cleanup of old dumps, fails the cron run so Railway shows it.
 
-Dumps are uploaded to each bucket as `backups/pausebot-<timestamp>.dump`. After a successful upload, dumps older than 30 days are deleted from that bucket; nothing else in the bucket is touched. To restore one into a database, download it from any of the buckets and run:
+Dumps are uploaded to each bucket as `backups/pausebot-<timestamp>.dump`. After a successful upload, dumps older than 30 days are deleted from that bucket; nothing else in the bucket is touched. To restore one into a database, download it from any of the buckets (see [Downloading the latest dump](#downloading-the-latest-dump)) and run:
 
 ```bash
 pg_restore --clean --if-exists --no-owner --no-privileges --dbname "$DATABASE_URL" pausebot-<timestamp>.dump
 ```
+
+#### Downloading the latest dump
+
+`jobs/fetch_backup.py` downloads the newest dump from a bucket to your machine. It only lists and reads files under `backups/`; it never uploads or deletes anything. It prints the provider, bucket, file name, size, last modified time and local path, and never prints the key.
+
+**1. Create a separate read-only key.** Don't copy the cron job's key out of Railway: it can write and delete, and it should stay there. In Backblaze, go to Application Keys and add a new key with:
+
+- **Allow access to Bucket(s)**: `pauseai-pausebot-backups`
+- **Type of Access**: Read Only
+- **File name prefix**: `backups/`
+
+Backblaze shows the secret only once. For a read-only key on AWS, the policy needs `s3:ListBucket`, `s3:ListBucketVersions` and `s3:GetObject`.
+
+**2. Put it in `.env`** (which is gitignored), yourself, in an editor:
+
+```bash
+BACKUP_B2_REGION=eu-central-003
+BACKUP_B2_BUCKET=pauseai-pausebot-backups
+BACKUP_B2_KEY_ID=<keyID>
+BACKUP_B2_SECRET=<applicationKey>
+```
+
+Anything that can read `.env` can read the key, including an AI agent working in the same checkout. To keep the key from an agent, run this from a checkout the agent can't reach.
+
+**3. Run it** from the repo root:
+
+```bash
+pip install -r requirements.txt -r jobs/requirements.txt
+python jobs/fetch_backup.py
+```
+
+The dump lands in `backups/` at the repo root, which is gitignored. Use `--out DIR` to put it somewhere else. If a file with the same name and size is already there, it isn't downloaded again.
+
+If several providers are set up in `.env`, it uses the first one that works, in the order B2, R2, S3. Use `--provider b2`, `r2` or `s3` to choose one. It doesn't compare providers, so it warns you if the dump it found is more than 2 days old, which means recent backups to that bucket may have failed. It exits with a non-zero status and says why if variables are missing, the bucket has no dumps, or the provider rejects the key.
+
+**Delete the dump when you're done.** Dumps contain the 30-day message log, so a dump holds members' messages.

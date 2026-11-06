@@ -88,6 +88,11 @@ class Target:
         return self.provider.versioned
 
 
+def variable_names(name):
+    """The four BACKUP_<PROVIDER>_* variable names, location first."""
+    return [f"BACKUP_{name.upper()}_{v}" for v in (PROVIDERS[name].location_var, "BUCKET", "KEY_ID", "SECRET")]
+
+
 def load_targets(env=None):
     """Returns (targets, problems): the providers whose BACKUP_<PROVIDER>_* variables are all set
     and valid, and what's wrong with any that are only partly set or malformed. A problem fails
@@ -99,7 +104,7 @@ def load_targets(env=None):
         problems.append(f"{', '.join(old)} {'is' if len(old) == 1 else 'are'} no longer used; set BACKUP_B2_REGION, "
                         "BACKUP_B2_BUCKET, BACKUP_B2_KEY_ID and BACKUP_B2_SECRET instead")
     for name, provider in PROVIDERS.items():
-        names = [f"BACKUP_{name.upper()}_{v}" for v in (provider.location_var, "BUCKET", "KEY_ID", "SECRET")]
+        names = variable_names(name)
         values = [env.get(n, "").strip() for n in names]
         if not any(values):
             continue
@@ -109,7 +114,8 @@ def load_targets(env=None):
             continue
         location, bucket, key_id, secret = values
         if not re.fullmatch(provider.location_format, location):
-            problems.append(f"{names[0]} should look like {provider.location_example}, got {location!r}")
+            # Not the value itself: a key pasted on the wrong line would end up in the logs
+            problems.append(f"{names[0]} should look like {provider.location_example}")
             continue
         targets.append(Target(name=name, provider=provider, location=location, bucket=bucket,
                               key_id=key_id, secret=secret))
@@ -137,18 +143,24 @@ def make_client(target):
 
 
 def list_dumps(client, target):
-    """Every stored copy of our dumps as {Key, VersionId, LastModified}. On a versioned bucket
-    (B2 keeps all versions by default) that includes old versions and hide/delete markers, which
-    a plain listing doesn't show and a plain delete doesn't remove."""
+    """Every stored copy of our dumps as {Key, VersionId, LastModified, Size, Current}. On a
+    versioned bucket (B2 keeps all versions by default) that includes old versions and hide/delete
+    markers, which a plain listing doesn't show and a plain delete doesn't remove. Current is true
+    for the one copy of a file that a plain download gets, so false for all of those."""
     # Only our own dumps, in case the bucket also holds another service's backups
     if target.versioned:
         for page in client.get_paginator("list_object_versions").paginate(Bucket=target.bucket, Prefix=BUCKET_PREFIX):
-            for v in page.get("Versions", []) + page.get("DeleteMarkers", []):
-                yield {"Key": v["Key"], "VersionId": v["VersionId"], "LastModified": v["LastModified"]}
+            for v in page.get("Versions", []):
+                yield {"Key": v["Key"], "VersionId": v["VersionId"], "LastModified": v["LastModified"],
+                       "Size": v.get("Size"), "Current": v.get("IsLatest", False)}
+            for m in page.get("DeleteMarkers", []):
+                yield {"Key": m["Key"], "VersionId": m["VersionId"], "LastModified": m["LastModified"],
+                       "Size": None, "Current": False}
     else:
         for page in client.get_paginator("list_objects_v2").paginate(Bucket=target.bucket, Prefix=BUCKET_PREFIX):
             for o in page.get("Contents", []):
-                yield {"Key": o["Key"], "VersionId": None, "LastModified": o["LastModified"]}
+                yield {"Key": o["Key"], "VersionId": None, "LastModified": o["LastModified"],
+                       "Size": o.get("Size"), "Current": True}
 
 
 def expired(dumps, now=None):
