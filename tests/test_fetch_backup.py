@@ -1,12 +1,13 @@
 """Finding and downloading the latest dump, against a local moto S3 server."""
 import datetime
+import errno
 import os
 import stat
 import subprocess
 import sys
 from pathlib import Path
 import pytest
-from botocore.exceptions import ClientError, EndpointConnectionError
+from botocore.exceptions import ClientError, ConnectTimeoutError, EndpointConnectionError
 from jobs import backup, fetch_backup
 
 NOW = datetime.datetime.now(datetime.UTC)
@@ -38,27 +39,28 @@ def rejecting_client(code, message="rejected"):
 
 # ── Choosing the dump ─────────────────────────────────────────────────────────
 
-def test_newest_dump_goes_by_last_modified():
-    dumps = [dump("backups/pausebot-b.dump", 2), dump("backups/pausebot-c.dump", 1), dump("backups/pausebot-a.dump", 3)]
-    assert fetch_backup.newest_dump(dumps)["Key"] == "backups/pausebot-c.dump"
+def test_newest_dump_goes_by_the_time_in_the_name():
+    dumps = [dump(f"backups/pausebot-2026-11-0{day}_030000.dump") for day in (2, 3, 1)]
+    assert fetch_backup.newest_dump(dumps)["Key"] == "backups/pausebot-2026-11-03_030000.dump"
 
 
-def test_newest_dump_breaks_ties_by_name():
-    dumps = [dump("backups/pausebot-2026-11-02_030000.dump"), dump("backups/pausebot-2026-11-01_030000.dump")]
-    dumps[1]["LastModified"] = dumps[0]["LastModified"]
-    assert fetch_backup.newest_dump(dumps)["Key"] == "backups/pausebot-2026-11-02_030000.dump"
+def test_old_dump_copied_in_later_does_not_count_as_new():
+    dumps = [dump("backups/pausebot-2026-11-05_030000.dump", 1), dump("backups/pausebot-2026-10-01_030000.dump", 0)]
+    assert fetch_backup.newest_dump(dumps)["Key"] == "backups/pausebot-2026-11-05_030000.dump"
 
 
 def test_newest_dump_ignores_old_versions_and_other_files():
+    wanted = "backups/pausebot-2026-11-01_030000.dump"
     dumps = [
-        dump("backups/pausebot-wanted.dump", 5),
-        dump("backups/pausebot-hidden.dump", 1, current=False),
-        dump("backups/pausebot-notes.txt", 1),
-        dump("backups/pausebot-sub/dir.dump", 1),
-        dump("backups/pausebot-.dump.tmp", 1),
-        dump("backups/catalyse-1.dump", 1),
+        dump(wanted),
+        dump("backups/pausebot-2026-11-02_030000.dump", current=False),
+        dump("backups/pausebot-2026-11-03_030000.txt"),
+        dump("backups/pausebot-2026-11-03_030000.dump.tmp"),
+        dump("backups/pausebot-manual.dump"),
+        dump("backups/pausebot-2026-11-03_030000/x.dump"),
+        dump("backups/catalyse-2026-11-03_030000.dump"),
     ]
-    assert fetch_backup.newest_dump(dumps)["Key"] == "backups/pausebot-wanted.dump"
+    assert fetch_backup.newest_dump(dumps)["Key"] == wanted
 
 
 def test_newest_dump_of_nothing():
@@ -67,20 +69,20 @@ def test_newest_dump_of_nothing():
 
 def test_versioned_bucket_ignores_hidden_dumps_and_old_versions(make_target, tmp_path):
     target = make_target("b2", "versioned", versioned=True)
-    client = put(target, "backups/pausebot-1.dump", body=b"old version, longer")
-    put(target, "backups/pausebot-1.dump", body=b"current")
+    client = put(target, "backups/pausebot-2026-11-01_030000.dump", body=b"old version, longer")
+    put(target, "backups/pausebot-2026-11-01_030000.dump", body=b"current")
     # Newer than the wanted file, but hidden, so only old versions and a delete marker remain
-    put(target, "backups/pausebot-2.dump")
-    client.delete_object(Bucket="versioned", Key="backups/pausebot-2.dump")
+    put(target, "backups/pausebot-2026-11-02_030000.dump")
+    client.delete_object(Bucket="versioned", Key="backups/pausebot-2026-11-02_030000.dump")
 
     found, path, downloaded = fetch_backup.fetch(target, tmp_path)
-    assert found["Key"] == "backups/pausebot-1.dump" and found["Size"] == len(b"current")
+    assert found["Key"] == "backups/pausebot-2026-11-01_030000.dump" and found["Size"] == len(b"current")
     assert path.read_bytes() == b"current" and downloaded
 
 
 def test_only_hidden_dumps_counts_as_no_dumps(make_target, tmp_path, monkeypatch, capsys):
     target = make_target("b2", "versioned", versioned=True)
-    put(target, "backups/pausebot-1.dump").delete_object(Bucket="versioned", Key="backups/pausebot-1.dump")
+    put(target, "backups/pausebot-2026-11-01_030000.dump").delete_object(Bucket="versioned", Key="backups/pausebot-2026-11-01_030000.dump")
     use_targets(monkeypatch, target)
     assert fetch_backup.main(["--out", str(tmp_path)]) == 1
     assert "no backups/pausebot-*.dump files in bucket versioned" in capsys.readouterr().err
@@ -89,7 +91,8 @@ def test_only_hidden_dumps_counts_as_no_dumps(make_target, tmp_path, monkeypatch
 def test_ignores_files_that_are_not_dumps_on_an_unversioned_bucket(make_target, tmp_path):
     target = make_target("r2", "plain")
     put(target, "backups/pausebot-2026-11-01_030000.dump")
-    put(target, "backups/pausebot-zzz.txt", "backups/catalyse-zzz.dump", "other/pausebot-zzz.dump")
+    put(target, "backups/pausebot-zzz.txt", "backups/pausebot-zzz.dump", "backups/catalyse-zzz.dump",
+        "other/pausebot-zzz.dump")
     _, path, _ = fetch_backup.fetch(target, tmp_path)
     assert path == tmp_path / "pausebot-2026-11-01_030000.dump"
 
@@ -98,39 +101,41 @@ def test_ignores_files_that_are_not_dumps_on_an_unversioned_bucket(make_target, 
 
 def test_download_is_private_and_leaves_nothing_else(make_target, tmp_path):
     target = make_target("b2", "pausebot")
-    put(target, "backups/pausebot-1.dump", body=os.urandom(4096))
+    put(target, "backups/pausebot-2026-11-01_030000.dump", body=os.urandom(4096))
     out = tmp_path / "new" / "dir"
     _, path, downloaded = fetch_backup.fetch(target, out)
     assert downloaded and path.stat().st_size == 4096
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert stat.S_IMODE(out.stat().st_mode) == 0o700
-    assert [p.name for p in out.iterdir()] == ["pausebot-1.dump"]
+    assert [p.name for p in out.iterdir()] == ["pausebot-2026-11-01_030000.dump"]
 
 
 def test_large_dump_downloads_whole(make_target, tmp_path):
     # Over boto3's 8 MB threshold, so this comes down in parallel ranged parts
     target = make_target("b2", "pausebot")
     body = os.urandom(9 * 1024 * 1024)
-    put(target, "backups/pausebot-1.dump", body=body)
+    put(target, "backups/pausebot-2026-11-01_030000.dump", body=body)
     _, path, _ = fetch_backup.fetch(target, tmp_path)
     assert path.read_bytes() == body
 
 
 def test_skips_a_file_already_there(make_target, tmp_path, monkeypatch, capsys):
     target = make_target("b2", "pausebot")
-    put(target, "backups/pausebot-1.dump", body=b"dump")
-    existing = tmp_path / "pausebot-1.dump"
+    put(target, "backups/pausebot-2026-11-01_030000.dump", body=b"dump")
+    existing = tmp_path / "pausebot-2026-11-01_030000.dump"
     existing.write_bytes(b"same")  # Same size, and different bytes prove it wasn't replaced
+    existing.chmod(0o644)
     use_targets(monkeypatch, target)
     assert fetch_backup.main(["--out", str(tmp_path)]) == 0
     assert existing.read_bytes() == b"same"
+    assert stat.S_IMODE(existing.stat().st_mode) == 0o600
     assert "already there" in capsys.readouterr().out
 
 
 def test_replaces_a_file_of_another_size(make_target, tmp_path):
     target = make_target("b2", "pausebot")
-    put(target, "backups/pausebot-1.dump", body=b"whole dump")
-    existing = tmp_path / "pausebot-1.dump"
+    put(target, "backups/pausebot-2026-11-01_030000.dump", body=b"whole dump")
+    existing = tmp_path / "pausebot-2026-11-01_030000.dump"
     existing.write_bytes(b"whole")
     _, _, downloaded = fetch_backup.fetch(target, tmp_path)
     assert downloaded and existing.read_bytes() == b"whole dump"
@@ -138,7 +143,7 @@ def test_replaces_a_file_of_another_size(make_target, tmp_path):
 
 def test_failed_download_leaves_nothing_behind(make_target, tmp_path):
     target = make_target("b2", "pausebot")
-    client = put(target, "backups/pausebot-1.dump", body=b"dump")
+    client = put(target, "backups/pausebot-2026-11-01_030000.dump", body=b"dump")
 
     def short_read(bucket, key, f):
         f.write(b"du")
@@ -152,7 +157,7 @@ def test_failed_download_leaves_nothing_behind(make_target, tmp_path):
 
 def test_only_lists_and_reads_under_the_prefix(make_target, tmp_path, monkeypatch):
     target = make_target("b2", "versioned", versioned=True)
-    put(target, "backups/pausebot-1.dump")
+    put(target, "backups/pausebot-2026-11-01_030000.dump")
     calls = []
     client = backup.make_client(target)
     client.meta.events.register("provide-client-params.s3", lambda params, model, **_: calls.append((model.name, params)))
@@ -167,7 +172,7 @@ def test_only_lists_and_reads_under_the_prefix(make_target, tmp_path, monkeypatc
 
 def test_prints_the_details_and_nothing_secret(make_target, tmp_path, monkeypatch, capsys):
     target = make_target("b2", "pausebot")
-    put(target, "backups/pausebot-1.dump", body=b"dump")
+    put(target, "backups/pausebot-2026-11-01_030000.dump", body=b"dump")
     target.key_id, target.secret = "keyid123", "sup3rsecret"
     use_targets(monkeypatch, target)
 
@@ -176,8 +181,8 @@ def test_prints_the_details_and_nothing_secret(make_target, tmp_path, monkeypatc
     lines = captured.out.splitlines()
     assert [line.split(":")[0] for line in lines] == ["Provider", "Bucket", "File", "Size", "Last modified", "Local path"]
     assert lines[0].split() == ["Provider:", "b2"] and lines[1].split() == ["Bucket:", "pausebot"]
-    assert lines[2].split() == ["File:", "pausebot-1.dump"]
-    assert lines[5].split() == ["Local", "path:", str(tmp_path / "pausebot-1.dump")]
+    assert lines[2].split() == ["File:", "pausebot-2026-11-01_030000.dump"]
+    assert lines[5].split() == ["Local", "path:", str(tmp_path / "pausebot-2026-11-01_030000.dump")]
     assert "keyid123" not in captured.out + captured.err and "sup3rsecret" not in captured.out + captured.err
 
 
@@ -185,7 +190,7 @@ def test_uses_the_first_provider_that_works(make_target, tmp_path, monkeypatch, 
     broken = make_target("b2", "missing", create=False)
     empty = make_target("r2", "empty")
     good = make_target("s3", "good")
-    put(good, "backups/pausebot-1.dump")
+    put(good, "backups/pausebot-2026-11-01_030000.dump")
     use_targets(monkeypatch, broken, empty, good)
 
     assert fetch_backup.main(["--out", str(tmp_path)]) == 0
@@ -197,17 +202,17 @@ def test_uses_the_first_provider_that_works(make_target, tmp_path, monkeypatch, 
 
 def test_provider_flag_chooses_one(make_target, tmp_path, monkeypatch):
     first, second = make_target("b2", "first"), make_target("r2", "second")
-    put(first, "backups/pausebot-1.dump")
-    put(second, "backups/pausebot-2.dump")
+    put(first, "backups/pausebot-2026-11-01_030000.dump")
+    put(second, "backups/pausebot-2026-11-02_030000.dump")
     use_targets(monkeypatch, first, second)
 
     assert fetch_backup.main(["--provider", "r2", "--out", str(tmp_path)]) == 0
-    assert [p.name for p in tmp_path.iterdir()] == ["pausebot-2.dump"]
+    assert [p.name for p in tmp_path.iterdir()] == ["pausebot-2026-11-02_030000.dump"]
 
 
 def test_provider_flag_does_not_fall_back(make_target, tmp_path, monkeypatch):
     good = make_target("r2", "good")
-    put(good, "backups/pausebot-1.dump")
+    put(good, "backups/pausebot-2026-11-01_030000.dump")
     use_targets(monkeypatch, make_target("b2", "missing", create=False), good)
     assert fetch_backup.main(["--provider", "b2", "--out", str(tmp_path)]) == 1
     assert list(tmp_path.iterdir()) == []
@@ -224,6 +229,14 @@ def test_nothing_configured(capsys):
     err = capsys.readouterr().err
     assert "No usable provider" in err
     assert "BACKUP_B2_REGION, BACKUP_B2_BUCKET, BACKUP_B2_KEY_ID, BACKUP_B2_SECRET in .env" in err
+
+
+def test_a_config_problem_is_not_followed_by_another_providers_variables(capsys):
+    env = {"BACKUP_R2_BUCKET": "bucket"}
+    assert fetch_backup.main([], env=env) == 1
+    err = capsys.readouterr().err
+    assert "Missing BACKUP_R2_ACCOUNT_ID, BACKUP_R2_KEY_ID, BACKUP_R2_SECRET" in err
+    assert "BACKUP_B2" not in err
 
 
 def test_chosen_provider_not_configured(capsys):
@@ -261,9 +274,49 @@ def test_unreachable_provider(tmp_path, monkeypatch, capsys):
     assert "b2: could not talk to the bucket (EndpointConnectionError)" in capsys.readouterr().err
 
 
+def test_network_errors_that_are_oserrors_are_not_blamed_on_the_disk(tmp_path, monkeypatch, capsys):
+    tried = []
+
+    def timing_out(t):
+        tried.append(t.name)
+        raise ConnectTimeoutError(endpoint_url="https://s3.example")
+
+    monkeypatch.setattr(backup, "make_client", timing_out)
+    env = {**B2_ENV, "BACKUP_S3_REGION": "eu-west-2", "BACKUP_S3_BUCKET": "b", "BACKUP_S3_KEY_ID": "k",
+           "BACKUP_S3_SECRET": "s"}
+    assert fetch_backup.main(["--out", str(tmp_path)], env=env) == 1
+    assert "b2: could not talk to the bucket (ConnectTimeoutError)" in capsys.readouterr().err
+    assert tried == ["b2", "s3"]  # Still moves on to the next provider
+
+
+def test_local_failure_does_not_download_again_from_the_next_provider(make_target, tmp_path, monkeypatch, capsys):
+    first, second = make_target("b2", "first"), make_target("s3", "second")
+    put(first, "backups/pausebot-2026-11-01_030000.dump")
+    put(second, "backups/pausebot-2026-11-01_030000.dump")
+    use_targets(monkeypatch, first, second)
+    tried = []
+
+    def disk_full(client, target, dump, out_dir):
+        tried.append(target.name)
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(fetch_backup, "download", disk_full)
+    assert fetch_backup.main(["--out", str(tmp_path)]) == 1
+    assert tried == ["b2"]
+    assert "b2: could not write the file: No space left on device" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("age_days, warned", [(1, False), (3, True)])
+def test_warns_about_an_old_dump(tmp_path, monkeypatch, capsys, age_days, warned):
+    found = dump("backups/pausebot-2026-11-01_030000.dump", age_days)
+    monkeypatch.setattr(fetch_backup, "fetch", lambda t, out: (found, tmp_path / "x.dump", True))
+    assert fetch_backup.main(["--out", str(tmp_path)], env=B2_ENV) == 0
+    assert ("this dump is 3 days old" in capsys.readouterr().err) is warned
+
+
 def test_unwritable_output_is_reported(make_target, tmp_path, monkeypatch, capsys):
     target = make_target("b2", "pausebot")
-    put(target, "backups/pausebot-1.dump")
+    put(target, "backups/pausebot-2026-11-01_030000.dump")
     use_targets(monkeypatch, target)
     blocked = tmp_path / "file"
     blocked.write_text("in the way")

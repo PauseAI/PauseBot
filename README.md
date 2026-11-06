@@ -129,7 +129,7 @@ pg_restore --clean --if-exists --no-owner --no-privileges --dbname "$DATABASE_UR
 - **Type of Access**: Read Only
 - **File name prefix**: `backups/`
 
-Backblaze shows the secret only once.
+Backblaze shows the secret only once. For a read-only key on AWS, the policy needs `s3:ListBucket`, `s3:ListBucketVersions` and `s3:GetObject`.
 
 **2. Put it in `.env`** (which is gitignored), yourself, in an editor:
 
@@ -151,6 +151,6 @@ python jobs/fetch_backup.py
 
 The dump lands in `backups/` at the repo root, which is gitignored. Use `--out DIR` to put it somewhere else. If a file with the same name and size is already there, it isn't downloaded again.
 
-If several providers are set up in `.env`, it uses the first one that works, in the order B2, R2, S3. Use `--provider b2`, `r2` or `s3` to choose one. It exits with a non-zero status and says why if variables are missing, the bucket has no dumps, or the provider rejects the key.
+If several providers are set up in `.env`, it uses the first one that works, in the order B2, R2, S3. Use `--provider b2`, `r2` or `s3` to choose one. It doesn't compare providers, so it warns you if the dump it found is more than 2 days old, which means recent backups to that bucket may have failed. It exits with a non-zero status and says why if variables are missing, the bucket has no dumps, or the provider rejects the key.
 
 **Delete the dump when you're done.** Dumps contain the 30-day message log, so a dump holds members' messages.

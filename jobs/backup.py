@@ -88,6 +88,11 @@ class Target:
         return self.provider.versioned
 
 
+def variable_names(name):
+    """The four BACKUP_<PROVIDER>_* variable names, location first."""
+    return [f"BACKUP_{name.upper()}_{v}" for v in (PROVIDERS[name].location_var, "BUCKET", "KEY_ID", "SECRET")]
+
+
 def load_targets(env=None):
     """Returns (targets, problems): the providers whose BACKUP_<PROVIDER>_* variables are all set
     and valid, and what's wrong with any that are only partly set or malformed. A problem fails
@@ -99,7 +104,7 @@ def load_targets(env=None):
         problems.append(f"{', '.join(old)} {'is' if len(old) == 1 else 'are'} no longer used; set BACKUP_B2_REGION, "
                         "BACKUP_B2_BUCKET, BACKUP_B2_KEY_ID and BACKUP_B2_SECRET instead")
     for name, provider in PROVIDERS.items():
-        names = [f"BACKUP_{name.upper()}_{v}" for v in (provider.location_var, "BUCKET", "KEY_ID", "SECRET")]
+        names = variable_names(name)
         values = [env.get(n, "").strip() for n in names]
         if not any(values):
             continue
@@ -109,7 +114,8 @@ def load_targets(env=None):
             continue
         location, bucket, key_id, secret = values
         if not re.fullmatch(provider.location_format, location):
-            problems.append(f"{names[0]} should look like {provider.location_example}, got {location!r}")
+            # Not the value itself: a key pasted on the wrong line would end up in the logs
+            problems.append(f"{names[0]} should look like {provider.location_example}")
             continue
         targets.append(Target(name=name, provider=provider, location=location, bucket=bucket,
                               key_id=key_id, secret=secret))
