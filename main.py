@@ -66,7 +66,7 @@ COUNTRY_DATA = {
     1188719899401523330: {"name": "Sweden", "onboarders": [269204846572339211], "msg": "", "email": None},
     1188719610384633918: {"name": "Czech", "onboarders": [971680888960208926], "msg": "", "email": None},
     1256260218162122843: {"name": "Kenya", "onboarders": [853298855310000148], "msg": "", "email": None},
-    # An empty onboarders list pings members with both this country role and the National Leader role
+    # An empty onboarders list pings members with this country role and Chapter Greeter, or failing that National Leader
     1188719747282518130: {"name": "Israel", "onboarders": [], "msg": "", "email": None},
     1188719975796584479: {"name": "South Korea", "onboarders": [], "msg": "", "email": None},
 }
@@ -446,8 +446,8 @@ async def sync_member_to_airtable(member, extra_fields=None):
         except Exception as e:
             print(f"Exception posting user {member.name}: {e}")
 
-# Guild ID -> National Leader role ID, looked up by name in on_ready
-national_leader_role_ids = {}
+# Guild ID -> {role name: role ID} for onboarding.TIER_ROLE_NAMES, looked up by name in on_ready
+onboarding_tier_role_ids = {}
 
 @bot.event
 async def on_ready():
@@ -455,12 +455,15 @@ async def on_ready():
     for guild in bot.guilds:
         if not is_active_guild(guild.id):
             continue
-        leader_role = onboarding.find_national_leader_role(guild)
-        if leader_role:
-            national_leader_role_ids[guild.id] = leader_role.id
-            print(f"National Leader role in {guild.name}: {leader_role.id}")
-        else:
-            print(f"No '{onboarding.NATIONAL_LEADER_ROLE_NAME}' role in {guild.name}: countries without onboarders won't ping anyone")
+        role_ids = {}
+        for name in onboarding.TIER_ROLE_NAMES:
+            tier_role = onboarding.find_role_by_name(guild, name)
+            if tier_role:
+                role_ids[name] = tier_role.id
+                print(f"{name} role in {guild.name}: {tier_role.id}")
+            else:
+                print(f"No '{name}' role in {guild.name}: skipping it when choosing who to ping")
+        onboarding_tier_role_ids[guild.id] = role_ids
     print('Listening for users joining...')
     bot.loop.create_task(startup_sync_recent_members())
 
@@ -572,9 +575,10 @@ async def on_member_update(before, after):
         
         # 1. Ping Staff in Onboarding Channel
         if channel:
-            leader_role_id = national_leader_role_ids.get(after.guild.id)
-            leader_role = after.guild.get_role(leader_role_id) if leader_role_id else None
-            onboarder_ids = onboarding.resolve_onboarders(info.get("onboarders"), role, leader_role, after.id)
+            role_ids = onboarding_tier_role_ids.get(after.guild.id, {})
+            tier_roles = [after.guild.get_role(role_ids[name]) if name in role_ids else None
+                          for name in onboarding.TIER_ROLE_NAMES]
+            onboarder_ids = onboarding.resolve_onboarders(info.get("onboarders"), role, tier_roles, after.id)
             await channel.send(onboarding.onboarding_message(onboarder_ids, after.mention, info["name"]))
             if onboarder_ids:
                 onboarding_notification = True
