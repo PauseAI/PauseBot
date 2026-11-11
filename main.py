@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from aiohttp import web
 import db
 from snapshot import take_snapshot
+import onboarding
 # Load environment variables from .env file
 load_dotenv()
 
@@ -65,6 +66,9 @@ COUNTRY_DATA = {
     1188719899401523330: {"name": "Sweden", "onboarders": [269204846572339211], "msg": "", "email": None},
     1188719610384633918: {"name": "Czech", "onboarders": [971680888960208926], "msg": "", "email": None},
     1256260218162122843: {"name": "Kenya", "onboarders": [853298855310000148], "msg": "", "email": None},
+    # An empty onboarders list pings members with both this country role and the National Leader role
+    1188719747282518130: {"name": "Israel", "onboarders": [], "msg": "", "email": None},
+    1188719975796584479: {"name": "South Korea", "onboarders": [], "msg": "", "email": None},
 }
 
 intents = discord.Intents.default()
@@ -442,9 +446,21 @@ async def sync_member_to_airtable(member, extra_fields=None):
         except Exception as e:
             print(f"Exception posting user {member.name}: {e}")
 
+# Guild ID -> National Leader role ID, looked up by name in on_ready
+national_leader_role_ids = {}
+
 @bot.event
 async def on_ready():
     print(f'Ready! Logged in as {bot.user}')
+    for guild in bot.guilds:
+        if not is_active_guild(guild.id):
+            continue
+        leader_role = onboarding.find_national_leader_role(guild)
+        if leader_role:
+            national_leader_role_ids[guild.id] = leader_role.id
+            print(f"National Leader role in {guild.name}: {leader_role.id}")
+        else:
+            print(f"No '{onboarding.NATIONAL_LEADER_ROLE_NAME}' role in {guild.name}: countries without onboarders won't ping anyone")
     print('Listening for users joining...')
     bot.loop.create_task(startup_sync_recent_members())
 
@@ -555,12 +571,13 @@ async def on_member_update(before, after):
         info = COUNTRY_DATA[role.id]
         
         # 1. Ping Staff in Onboarding Channel
-        if channel and info.get("onboarders"):
-            onboarder_mentions = " ".join([f"<@{uid}>" for uid in info["onboarders"]])
-            ping_msg = f"{onboarder_mentions} : {after.mention} has joined from {info['name']}!"
-            await channel.send(ping_msg)
-            
-            onboarding_notification = True
+        if channel:
+            leader_role_id = national_leader_role_ids.get(after.guild.id)
+            leader_role = after.guild.get_role(leader_role_id) if leader_role_id else None
+            onboarder_ids = onboarding.resolve_onboarders(info.get("onboarders"), role, leader_role, after.id)
+            await channel.send(onboarding.onboarding_message(onboarder_ids, after.mention, info["name"]))
+            if onboarder_ids:
+                onboarding_notification = True
             
         # 2. Send MailerSend Email (if email exists)
         target_email = info.get("email")
