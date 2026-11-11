@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from aiohttp import web
 import db
 from snapshot import take_snapshot
+import onboarding
 # Load environment variables from .env file
 load_dotenv()
 
@@ -36,35 +37,50 @@ last_yagpdb_alert_time = None
 ONBOARDING_PIPELINE_CHANNEL_ID = 1174807044990193775
 AIRTABLE_BASE_ID = "appWPTGqZmUcs3NWu"
 AIRTABLE_TABLE_ID = "tblxeqggeTWU7Y8ME"
+# Left out of GENERAL_DM for members who've already joined (see onboarding.has_joined)
+GENERAL_DM_JOIN_PARAGRAPH = "If you’re looking for an immediate action to take, join up at [pauseai.info/join](https://pauseai.info/join)."
 GENERAL_DM = """Welcome to the PauseAI Global Discord, {user}!
-We're delighted to have you join us. Please make sure you have also signed up via our Join form [here](https://pauseai.info/join). 
+We're delighted to have you join us.
  
 Feel free to introduce yourself in the <#1101804381755686972> – it's always nice to know who's joining us. 
  
-If you’re looking for an immediate action to take, check out [MicroCommit](https://microcommit.io/onboarding?org=135fcd8d-8116-44af-b885-14df992f9a8c), a platform where you can follow us and get weekly small tasks anyone can help with!
+""" + GENERAL_DM_JOIN_PARAGRAPH + """
  
 We also conduct welcome calls where you can meet others who are joining PauseAI, you can check them out [here](https://luma.com/PauseAI?tag=welcome).
  
 Lastly, you can find others near you who are organizing in communities: <#1171376873721298984>"""
 
+FRANCE_DM = """Bienvenue {user} ! PauseAI France est animé par Pause IA, qui a son propre serveur Discord : https://discord.gg/vyXGd7AeGc
+C'est là-bas que ça se passe pour agir en France. Tu peux bien sûr rester sur ce serveur aussi !
+
+Welcome {user}! PauseAI France is run by Pause IA, which has its own Discord server: https://discord.gg/vyXGd7AeGc
+That's the place to get involved in France. You're still very welcome here too!"""
+
 # Unified definition for Countries (MailerSend Emails + YAGPDB Onboarder Pings)
+# "onboarders" lists only apply until onboarding.ROLE_ROUTING_FROM; after that, every country pings by role.
 COUNTRY_DATA = {
-    1188719374941560925: {"name": "UK", "onboarders": [335365981276995594, 925051691798233089], "msg": "", "noDM": True, "email": None},
-    1188717849980702781: {"name": "US", "onboarders": [732773275238793266], "msg": "", "email": None},
-    1188719426552479824: {"name": "France", "onboarders": [456868543225528331], "msg": "", "email": None},
-    1188719399117541396: {"name": "Germany", "onboarders": [775477651703726092], "msg": "", "email": "germany@pauseai.info"},
-    1188719443954643035: {"name": "Netherlands", "onboarders": [1363472971141746718], "msg": "", "email": None},
-    1188719729662234624: {"name": "Italy", "onboarders": [1217966947057139762], "msg": "", "email": None},
-    1188720344882753566: {"name": "Spain", "onboarders": [758415679526797342], "msg": "", "email": None},
-    1250075465008549938: {"name": "Canada", "onboarders": [719546151593967616, 800445163520524311], "msg": "", "email": "canada@pauseai.info"},
-    1188719833555161089: {"name": "Nigeria", "onboarders": [1185890162027278446], "msg": "", "email": None},
-    1188720325530243142: {"name": "Romania", "onboarders": [521285222990348290], "msg": "", "email": None},
-    1188719500439343135: {"name": "Australia", "onboarders": [345795697792122891], "msg": "", "email": None},
-    1188719860096712756: {"name": "Poland", "onboarders": [1405864336873881644], "msg": "", "email": None},
-    1429216643459842129: {"name": "Serbia", "onboarders": [1060642083347632182], "msg": "", "email": None},
-    1188719899401523330: {"name": "Sweden", "onboarders": [269204846572339211], "msg": "", "email": None},
-    1188719610384633918: {"name": "Czech", "onboarders": [971680888960208926], "msg": "", "email": None},
-    1256260218162122843: {"name": "Kenya", "onboarders": [853298855310000148], "msg": "", "email": None},
+    1188719374941560925: {"name": "UK", "flag": "🇬🇧", "onboarders": [335365981276995594, 925051691798233089], "msg": "", "email": None},
+    1188717849980702781: {"name": "US", "flag": "🇺🇸", "onboarders": [732773275238793266], "msg": "", "email": None},
+    # France is run by Pause IA on its own Discord, so from onboarding.ROLE_ROUTING_FROM new members are
+    # pointed there instead of pinging anyone. Until then, beforeRoleRouting keeps its old behaviour.
+    1188719426552479824: {"name": "France", "flag": "🇫🇷", "onboarders": [], "msg": FRANCE_DM, "noPing": True, "email": None,
+                          "beforeRoleRouting": {"onboarders": [456868543225528331], "msg": "", "noPing": False}},
+    1188719399117541396: {"name": "Germany", "flag": "🇩🇪", "onboarders": [775477651703726092], "msg": "", "email": "germany@pauseai.info"},
+    1188719443954643035: {"name": "Netherlands", "flag": "🇳🇱", "onboarders": [1363472971141746718], "msg": "", "email": None},
+    1188719729662234624: {"name": "Italy", "flag": "🇮🇹", "onboarders": [1217966947057139762], "msg": "", "email": None},
+    1188720344882753566: {"name": "Spain", "flag": "🇪🇸", "onboarders": [758415679526797342], "msg": "", "email": None},
+    1250075465008549938: {"name": "Canada", "flag": "🇨🇦", "onboarders": [719546151593967616, 800445163520524311], "msg": "", "email": "canada@pauseai.info"},
+    1188719833555161089: {"name": "Nigeria", "flag": "🇳🇬", "onboarders": [1185890162027278446], "msg": "", "email": None},
+    1188720325530243142: {"name": "Romania", "flag": "🇷🇴", "onboarders": [521285222990348290], "msg": "", "email": None},
+    1188719500439343135: {"name": "Australia", "flag": "🇦🇺", "onboarders": [345795697792122891], "msg": "", "email": None},
+    1188719860096712756: {"name": "Poland", "flag": "🇵🇱", "onboarders": [1405864336873881644], "msg": "", "email": None},
+    1429216643459842129: {"name": "Serbia", "flag": "🇷🇸", "onboarders": [1060642083347632182], "msg": "", "email": None},
+    1188719899401523330: {"name": "Sweden", "flag": "🇸🇪", "onboarders": [269204846572339211], "msg": "", "email": None},
+    1188719610384633918: {"name": "Czech", "flag": "🇨🇿", "onboarders": [971680888960208926], "msg": "", "email": None},
+    1256260218162122843: {"name": "Kenya", "flag": "🇰🇪", "onboarders": [853298855310000148], "msg": "", "email": None},
+    # No static list: pings members with this country role and Chapter Greeter, or failing that National Leader
+    1188719747282518130: {"name": "Israel", "flag": "🇮🇱", "onboarders": [], "msg": "", "email": None},
+    1188719975796584479: {"name": "South Korea", "flag": "🇰🇷", "onboarders": [], "msg": "", "email": None},
 }
 
 intents = discord.Intents.default()
@@ -445,6 +461,18 @@ async def sync_member_to_airtable(member, extra_fields=None):
 @bot.event
 async def on_ready():
     print(f'Ready! Logged in as {bot.user}')
+    routing_state = "active" if onboarding.role_routing_active() else "not active yet"
+    print(f"Onboarding role routing is {routing_state} (switches on at {onboarding.ROLE_ROUTING_FROM.isoformat()})")
+    for guild in bot.guilds:
+        if not is_active_guild(guild.id):
+            continue
+        # Looked up by name on each role change too, so a role created or renamed later is picked up
+        for name in onboarding.TIER_ROLE_NAMES:
+            tier_role = discord.utils.get(guild.roles, name=name)
+            if tier_role:
+                print(f"{name} role in {guild.name}: {tier_role.id}")
+            else:
+                print(f"No '{name}' role in {guild.name} yet: skipping it when choosing who to ping")
     print('Listening for users joining...')
     bot.loop.create_task(startup_sync_recent_members())
 
@@ -493,24 +521,16 @@ async def send_delayed_welcome_dm(member):
     if not member:
         return
 
-    # Check which country roles they picked during the 3 minutes
-    matched_countries = [role.id for role in member.roles if role.id in COUNTRY_DATA]
-    
-    msg_to_send = GENERAL_DM
-    no_dm = False
-
-    if matched_countries:
-        country_info = COUNTRY_DATA[matched_countries[0]]
-        if country_info.get("noDM"):
-            no_dm = True
-        elif country_info.get("msg"):
-            msg_to_send = country_info["msg"]
-
-    if not no_dm:
+    # Every country role they picked during the 3 minutes, each with its own DM if it has one
+    country_infos = [COUNTRY_DATA[role.id] for role in member.roles if role.id in COUNTRY_DATA]
+    # Members who've already joined don't need asking to
+    skip = GENERAL_DM_JOIN_PARAGRAPH if onboarding.has_joined(member) else None
+    for dm in onboarding.welcome_dms(country_infos, GENERAL_DM, member.name, skip_paragraph=skip):
         try:
-            await member.send(msg_to_send.format(user=member.name))
+            await member.send(dm)
         except discord.Forbidden:
             print(f"Could not DM {member.name} - they might have DMs disabled.")
+            return
 
 @bot.event
 async def on_member_join(member):
@@ -551,16 +571,23 @@ async def on_member_update(before, after):
     
     channel = bot.get_channel(int(ONBOARDING_PIPELINE_CHANNEL_ID)) if ONBOARDING_PIPELINE_CHANNEL_ID else None
     
+    # By name, so test servers' own roles work and a role created after startup is found
+    tier_roles = [discord.utils.get(after.guild.roles, name=name) for name in onboarding.TIER_ROLE_NAMES]
+
     for role in added_country_roles:
         info = COUNTRY_DATA[role.id]
         
-        # 1. Ping Staff in Onboarding Channel
-        if channel and info.get("onboarders"):
-            onboarder_mentions = " ".join([f"<@{uid}>" for uid in info["onboarders"]])
-            ping_msg = f"{onboarder_mentions} : {after.mention} has joined from {info['name']}!"
-            await channel.send(ping_msg)
-            
-            onboarding_notification = True
+        # 1. Ping Staff in Onboarding Channel (skipped for noPing countries)
+        if channel:
+            ping_msg, onboarder_ids = onboarding.onboarding_ping(info, role, tier_roles, after.id, after.mention)
+            if ping_msg:
+                # A failed post shouldn't stop the email and Airtable sync below
+                try:
+                    await channel.send(ping_msg)
+                    if onboarder_ids:
+                        onboarding_notification = True
+                except discord.HTTPException as e:
+                    print(f"Error posting onboarding ping for {after.name} ({info['name']}): {e}")
             
         # 2. Send MailerSend Email (if email exists)
         target_email = info.get("email")
