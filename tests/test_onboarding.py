@@ -76,13 +76,6 @@ def test_message_mentions_each_onboarder():
     assert onboarding.onboarding_message([ALICE, BOB], "<@99>", "UK") == "<@1> <@2> : <@99> has joined from UK!"
 
 
-def test_find_role_by_name():
-    leader = role("National Leader")
-    guild = NS(roles=[role("Moderator"), leader])
-    assert onboarding.find_role_by_name(guild, "National Leader") is leader
-    assert onboarding.find_role_by_name(guild, "Chapter Greeter") is None
-
-
 def test_greeter_tier_is_tried_first():
     assert onboarding.TIER_ROLE_NAMES == ("Chapter Greeter", "National Leader")
 

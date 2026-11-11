@@ -29,14 +29,6 @@ def country_settings(info, now=None):
     return {**info, **info.get("beforeRoleRouting", {})}
 
 
-def find_role_by_name(guild, name):
-    """Looked up by name so test servers with their own roles work too."""
-    for role in guild.roles:
-        if role.name == name:
-            return role
-    return None
-
-
 def _without(ids, joining_member_id):
     """IDs in order, once each, leaving out the joining member."""
     seen = set()
@@ -74,6 +66,9 @@ def onboarding_ping(info, country_role, tier_roles, joining_member_id, member_me
     A country with "noPing" set posts nothing at all, not even the "nobody to ping" message,
     so the message is None. Static onboarders lists only count before ROLE_ROUTING_FROM.
     """
+    if now is None:
+        # Read the clock once, so both checks agree right at the switch
+        now = datetime.datetime.now(datetime.UTC)
     routing = role_routing_active(now)
     info = country_settings(info, now)
     if info.get("noPing"):

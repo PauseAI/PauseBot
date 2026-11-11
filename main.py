@@ -456,9 +456,6 @@ async def sync_member_to_airtable(member, extra_fields=None):
         except Exception as e:
             print(f"Exception posting user {member.name}: {e}")
 
-# Guild ID -> {role name: role ID} for onboarding.TIER_ROLE_NAMES, looked up by name in on_ready
-onboarding_tier_role_ids = {}
-
 @bot.event
 async def on_ready():
     print(f'Ready! Logged in as {bot.user}')
@@ -467,15 +464,13 @@ async def on_ready():
     for guild in bot.guilds:
         if not is_active_guild(guild.id):
             continue
-        role_ids = {}
+        # Looked up by name on each role change too, so a role created or renamed later is picked up
         for name in onboarding.TIER_ROLE_NAMES:
-            tier_role = onboarding.find_role_by_name(guild, name)
+            tier_role = discord.utils.get(guild.roles, name=name)
             if tier_role:
-                role_ids[name] = tier_role.id
                 print(f"{name} role in {guild.name}: {tier_role.id}")
             else:
-                print(f"No '{name}' role in {guild.name}: skipping it when choosing who to ping")
-        onboarding_tier_role_ids[guild.id] = role_ids
+                print(f"No '{name}' role in {guild.name} yet: skipping it when choosing who to ping")
     print('Listening for users joining...')
     bot.loop.create_task(startup_sync_recent_members())
 
@@ -582,19 +577,23 @@ async def on_member_update(before, after):
     
     channel = bot.get_channel(int(ONBOARDING_PIPELINE_CHANNEL_ID)) if ONBOARDING_PIPELINE_CHANNEL_ID else None
     
+    # By name, so test servers' own roles work and a role created after startup is found
+    tier_roles = [discord.utils.get(after.guild.roles, name=name) for name in onboarding.TIER_ROLE_NAMES]
+
     for role in added_country_roles:
         info = COUNTRY_DATA[role.id]
         
         # 1. Ping Staff in Onboarding Channel (skipped for noPing countries)
         if channel:
-            role_ids = onboarding_tier_role_ids.get(after.guild.id, {})
-            tier_roles = [after.guild.get_role(role_ids[name]) if name in role_ids else None
-                          for name in onboarding.TIER_ROLE_NAMES]
             ping_msg, onboarder_ids = onboarding.onboarding_ping(info, role, tier_roles, after.id, after.mention)
             if ping_msg:
-                await channel.send(ping_msg)
-            if onboarder_ids:
-                onboarding_notification = True
+                # A failed post shouldn't stop the email and Airtable sync below
+                try:
+                    await channel.send(ping_msg)
+                    if onboarder_ids:
+                        onboarding_notification = True
+                except discord.HTTPException as e:
+                    print(f"Error posting onboarding ping for {after.name} ({info['name']}): {e}")
             
         # 2. Send MailerSend Email (if email exists)
         target_email = info.get("email")
