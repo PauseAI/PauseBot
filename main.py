@@ -37,12 +37,14 @@ last_yagpdb_alert_time = None
 ONBOARDING_PIPELINE_CHANNEL_ID = 1174807044990193775
 AIRTABLE_BASE_ID = "appWPTGqZmUcs3NWu"
 AIRTABLE_TABLE_ID = "tblxeqggeTWU7Y8ME"
+# Left out of GENERAL_DM for members who've already joined (see onboarding.has_joined)
+GENERAL_DM_JOIN_PARAGRAPH = "If you’re looking for an immediate action to take, join up at [pauseai.info/join](https://pauseai.info/join)."
 GENERAL_DM = """Welcome to the PauseAI Global Discord, {user}!
 We're delighted to have you join us.
  
 Feel free to introduce yourself in the <#1101804381755686972> – it's always nice to know who's joining us. 
  
-If you’re looking for an immediate action to take, join up at [pauseai.info/join](https://pauseai.info/join).
+""" + GENERAL_DM_JOIN_PARAGRAPH + """
  
 We also conduct welcome calls where you can meet others who are joining PauseAI, you can check them out [here](https://luma.com/PauseAI?tag=welcome).
  
@@ -521,7 +523,9 @@ async def send_delayed_welcome_dm(member):
 
     # Every country role they picked during the 3 minutes, each with its own DM if it has one
     country_infos = [COUNTRY_DATA[role.id] for role in member.roles if role.id in COUNTRY_DATA]
-    for dm in onboarding.welcome_dms(country_infos, GENERAL_DM, member.name):
+    # Members who've already joined don't need asking to
+    skip = GENERAL_DM_JOIN_PARAGRAPH if onboarding.has_joined(member) else None
+    for dm in onboarding.welcome_dms(country_infos, GENERAL_DM, member.name, skip_paragraph=skip):
         try:
             await member.send(dm)
         except discord.Forbidden:

@@ -14,6 +14,10 @@ CHAPTER_GREETER_ROLE_NAME = "Chapter Greeter"
 NATIONAL_LEADER_ROLE_NAME = "National Leader"
 TIER_ROLE_NAMES = (CHAPTER_GREETER_ROLE_NAME, NATIONAL_LEADER_ROLE_NAME)
 
+# Granted (at Airtable's request) once someone has done /join: verified email, signed the
+# Volunteer Agreement and linked Discord. Not "Wants to help", which is only an onboarding answer.
+JOINED_ROLE_NAME = "Wants to volunteer"
+
 
 def role_routing_active(now=None):
     if now is None:
@@ -94,12 +98,22 @@ def country_dm_prefix(info):
     return f"Welcome to PauseAI in {info['name']} {info.get('flag', '')}".rstrip() + ":"
 
 
-def welcome_dms(country_infos, general_msg, user, now=None):
+def has_joined(member):
+    """Whether the member holds the JOINED_ROLE_NAME role, looked up by name in their guild.
+    False if the guild has no such role."""
+    joined_role = next((r for r in member.guild.roles if r.name == JOINED_ROLE_NAME), None)
+    return joined_role is not None and any(r.id == joined_role.id for r in member.roles)
+
+
+def welcome_dms(country_infos, general_msg, user, now=None, skip_paragraph=None):
     """The welcome DMs to send a member who picked these countries (COUNTRY_DATA entries), in order.
 
     Always the general welcome first, then one DM per picked country that has its own "msg",
-    each headed with that country's name and flag.
+    each headed with that country's name and flag. skip_paragraph, if given, is left out of the
+    general welcome along with the blank line after it.
     """
+    if skip_paragraph:
+        general_msg = general_msg.replace(skip_paragraph + "\n \n", "", 1)
     if now is None:
         now = datetime.datetime.now(datetime.UTC)
     settings = [country_settings(info, now) for info in country_infos]

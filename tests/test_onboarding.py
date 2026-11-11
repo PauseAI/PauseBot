@@ -171,8 +171,8 @@ US = main.COUNTRY_DATA[1188717849980702781]
 GERMANY = main.COUNTRY_DATA[1188719399117541396]
 
 
-def dms(*infos, now=AFTER):
-    return onboarding.welcome_dms(infos, main.GENERAL_DM, "pat", now)
+def dms(*infos, now=AFTER, skip=None):
+    return onboarding.welcome_dms(infos, main.GENERAL_DM, "pat", now, skip_paragraph=skip)
 
 
 def test_no_country_gets_general_welcome():
@@ -226,3 +226,48 @@ def test_every_dm_fits_in_one_discord_message():
         for now in (BEFORE, AFTER):
             for dm in onboarding.welcome_dms([info] if info else [], main.GENERAL_DM, longest_name, now):
                 assert len(dm) <= onboarding.DISCORD_MESSAGE_LIMIT
+
+
+JOINED = NS(id=500, name="Wants to volunteer")
+WANTS_TO_HELP = NS(id=501, name="Wants to help")
+
+
+def member_in(guild_roles, member_roles):
+    return NS(guild=NS(roles=guild_roles), roles=member_roles)
+
+
+def test_has_joined_with_wants_to_volunteer_role():
+    assert onboarding.has_joined(member_in([WANTS_TO_HELP, JOINED], [JOINED]))
+
+
+def test_has_not_joined_without_the_role():
+    # "Wants to help" is only an onboarding answer, not a join
+    assert not onboarding.has_joined(member_in([WANTS_TO_HELP, JOINED], [WANTS_TO_HELP]))
+
+
+def test_has_not_joined_when_guild_has_no_such_role():
+    assert not onboarding.has_joined(member_in([WANTS_TO_HELP], [WANTS_TO_HELP]))
+
+
+def joined_general_welcome():
+    return dms(skip=main.GENERAL_DM_JOIN_PARAGRAPH)[0]
+
+
+def test_joined_member_gets_general_welcome_without_join_paragraph():
+    general = main.GENERAL_DM.format(user="pat")
+    assert main.GENERAL_DM_JOIN_PARAGRAPH in general
+    joined = joined_general_welcome()
+    assert "pauseai.info/join" not in joined
+    # Everything else is identical, with no extra blank line where the paragraph was
+    assert joined == general.replace(main.GENERAL_DM_JOIN_PARAGRAPH + "\n \n", "")
+    assert "\n \n \n" not in joined and "\n\n" not in joined
+    assert joined.count("\n \n") == general.count("\n \n") - 1
+
+
+def test_member_who_has_not_joined_keeps_join_paragraph():
+    assert dms(skip=None)[0] == main.GENERAL_DM.format(user="pat")
+
+
+def test_skipping_join_paragraph_leaves_country_dms_alone():
+    france = main.COUNTRY_DATA[FRANCE_ID]
+    assert dms(france, skip=main.GENERAL_DM_JOIN_PARAGRAPH)[1:] == dms(france)[1:]
