@@ -164,3 +164,58 @@ def test_country_settings_without_overrides_is_unchanged():
     info = {"name": "UK", "onboarders": [ALICE], "noDM": True}
     assert onboarding.country_settings(info, BEFORE) == info
     assert onboarding.country_settings(info, AFTER) == info
+
+
+UK = main.COUNTRY_DATA[1188719374941560925]
+US = main.COUNTRY_DATA[1188717849980702781]
+GERMANY = main.COUNTRY_DATA[1188719399117541396]
+
+
+def dms(*infos, now=AFTER):
+    return onboarding.welcome_dms(infos, main.GENERAL_DM, "pat", now)
+
+
+def test_no_country_gets_general_welcome():
+    assert dms() == [main.GENERAL_DM.format(user="pat")]
+
+
+def test_countries_without_own_msg_get_one_general_welcome():
+    assert dms(US, GERMANY) == [main.GENERAL_DM.format(user="pat")]
+
+
+def test_no_dm_country_suppresses_general_welcome():
+    assert dms(UK) == []
+    assert dms(GERMANY, UK) == []
+
+
+def test_france_dm_is_headed_with_country_and_flag():
+    [dm] = dms(main.COUNTRY_DATA[FRANCE_ID])
+    assert dm.startswith("Welcome to PauseAI in France 🇫🇷:\n\nBienvenue pat")
+
+
+def test_france_dm_sent_whatever_order_alongside_no_dm_country():
+    france = main.COUNTRY_DATA[FRANCE_ID]
+    assert dms(UK, france) == dms(france, UK) == dms(france)
+
+
+def test_one_dm_per_country_with_own_msg():
+    a = {"name": "A", "flag": "🇦🇦", "msg": "hi {user} from A"}
+    b = {"name": "B", "msg": "hi {user} from B"}
+    assert dms(a, US, b) == ["Welcome to PauseAI in A 🇦🇦:\n\nhi pat from A",
+                             "Welcome to PauseAI in B:\n\nhi pat from B"]
+
+
+def test_france_before_switch_gets_general_welcome():
+    assert dms(main.COUNTRY_DATA[FRANCE_ID], now=BEFORE) == [main.GENERAL_DM.format(user="pat")]
+
+
+def test_every_country_has_a_flag():
+    assert all(info.get("flag") for info in main.COUNTRY_DATA.values())
+
+
+def test_every_dm_fits_in_one_discord_message():
+    longest_name = "x" * 32  # Discord usernames are at most 32 characters
+    for info in [None, *main.COUNTRY_DATA.values()]:
+        for now in (BEFORE, AFTER):
+            for dm in onboarding.welcome_dms([info] if info else [], main.GENERAL_DM, longest_name, now):
+                assert len(dm) <= onboarding.DISCORD_MESSAGE_LIMIT

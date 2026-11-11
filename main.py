@@ -57,28 +57,28 @@ That's the place to get involved in France. You're still very welcome here too!"
 # Unified definition for Countries (MailerSend Emails + YAGPDB Onboarder Pings)
 # "onboarders" lists only apply until onboarding.ROLE_ROUTING_FROM; after that, every country pings by role.
 COUNTRY_DATA = {
-    1188719374941560925: {"name": "UK", "onboarders": [335365981276995594, 925051691798233089], "msg": "", "noDM": True, "email": None},
-    1188717849980702781: {"name": "US", "onboarders": [732773275238793266], "msg": "", "email": None},
+    1188719374941560925: {"name": "UK", "flag": "🇬🇧", "onboarders": [335365981276995594, 925051691798233089], "msg": "", "noDM": True, "email": None},
+    1188717849980702781: {"name": "US", "flag": "🇺🇸", "onboarders": [732773275238793266], "msg": "", "email": None},
     # France is run by Pause IA on its own Discord, so from onboarding.ROLE_ROUTING_FROM new members are
     # pointed there instead of pinging anyone. Until then, beforeRoleRouting keeps its old behaviour.
-    1188719426552479824: {"name": "France", "onboarders": [], "msg": FRANCE_DM, "noPing": True, "email": None,
+    1188719426552479824: {"name": "France", "flag": "🇫🇷", "onboarders": [], "msg": FRANCE_DM, "noPing": True, "email": None,
                           "beforeRoleRouting": {"onboarders": [456868543225528331], "msg": "", "noPing": False}},
-    1188719399117541396: {"name": "Germany", "onboarders": [775477651703726092], "msg": "", "email": "germany@pauseai.info"},
-    1188719443954643035: {"name": "Netherlands", "onboarders": [1363472971141746718], "msg": "", "email": None},
-    1188719729662234624: {"name": "Italy", "onboarders": [1217966947057139762], "msg": "", "email": None},
-    1188720344882753566: {"name": "Spain", "onboarders": [758415679526797342], "msg": "", "email": None},
-    1250075465008549938: {"name": "Canada", "onboarders": [719546151593967616, 800445163520524311], "msg": "", "email": "canada@pauseai.info"},
-    1188719833555161089: {"name": "Nigeria", "onboarders": [1185890162027278446], "msg": "", "email": None},
-    1188720325530243142: {"name": "Romania", "onboarders": [521285222990348290], "msg": "", "email": None},
-    1188719500439343135: {"name": "Australia", "onboarders": [345795697792122891], "msg": "", "email": None},
-    1188719860096712756: {"name": "Poland", "onboarders": [1405864336873881644], "msg": "", "email": None},
-    1429216643459842129: {"name": "Serbia", "onboarders": [1060642083347632182], "msg": "", "email": None},
-    1188719899401523330: {"name": "Sweden", "onboarders": [269204846572339211], "msg": "", "email": None},
-    1188719610384633918: {"name": "Czech", "onboarders": [971680888960208926], "msg": "", "email": None},
-    1256260218162122843: {"name": "Kenya", "onboarders": [853298855310000148], "msg": "", "email": None},
+    1188719399117541396: {"name": "Germany", "flag": "🇩🇪", "onboarders": [775477651703726092], "msg": "", "email": "germany@pauseai.info"},
+    1188719443954643035: {"name": "Netherlands", "flag": "🇳🇱", "onboarders": [1363472971141746718], "msg": "", "email": None},
+    1188719729662234624: {"name": "Italy", "flag": "🇮🇹", "onboarders": [1217966947057139762], "msg": "", "email": None},
+    1188720344882753566: {"name": "Spain", "flag": "🇪🇸", "onboarders": [758415679526797342], "msg": "", "email": None},
+    1250075465008549938: {"name": "Canada", "flag": "🇨🇦", "onboarders": [719546151593967616, 800445163520524311], "msg": "", "email": "canada@pauseai.info"},
+    1188719833555161089: {"name": "Nigeria", "flag": "🇳🇬", "onboarders": [1185890162027278446], "msg": "", "email": None},
+    1188720325530243142: {"name": "Romania", "flag": "🇷🇴", "onboarders": [521285222990348290], "msg": "", "email": None},
+    1188719500439343135: {"name": "Australia", "flag": "🇦🇺", "onboarders": [345795697792122891], "msg": "", "email": None},
+    1188719860096712756: {"name": "Poland", "flag": "🇵🇱", "onboarders": [1405864336873881644], "msg": "", "email": None},
+    1429216643459842129: {"name": "Serbia", "flag": "🇷🇸", "onboarders": [1060642083347632182], "msg": "", "email": None},
+    1188719899401523330: {"name": "Sweden", "flag": "🇸🇪", "onboarders": [269204846572339211], "msg": "", "email": None},
+    1188719610384633918: {"name": "Czech", "flag": "🇨🇿", "onboarders": [971680888960208926], "msg": "", "email": None},
+    1256260218162122843: {"name": "Kenya", "flag": "🇰🇪", "onboarders": [853298855310000148], "msg": "", "email": None},
     # No static list: pings members with this country role and Chapter Greeter, or failing that National Leader
-    1188719747282518130: {"name": "Israel", "onboarders": [], "msg": "", "email": None},
-    1188719975796584479: {"name": "South Korea", "onboarders": [], "msg": "", "email": None},
+    1188719747282518130: {"name": "Israel", "flag": "🇮🇱", "onboarders": [], "msg": "", "email": None},
+    1188719975796584479: {"name": "South Korea", "flag": "🇰🇷", "onboarders": [], "msg": "", "email": None},
 }
 
 intents = discord.Intents.default()
@@ -519,24 +519,14 @@ async def send_delayed_welcome_dm(member):
     if not member:
         return
 
-    # Check which country roles they picked during the 3 minutes
-    matched_countries = [role.id for role in member.roles if role.id in COUNTRY_DATA]
-    
-    msg_to_send = GENERAL_DM
-    no_dm = False
-
-    if matched_countries:
-        country_info = onboarding.country_settings(COUNTRY_DATA[matched_countries[0]])
-        if country_info.get("noDM"):
-            no_dm = True
-        elif country_info.get("msg"):
-            msg_to_send = country_info["msg"]
-
-    if not no_dm:
+    # Every country role they picked during the 3 minutes, each with its own DM if it has one
+    country_infos = [COUNTRY_DATA[role.id] for role in member.roles if role.id in COUNTRY_DATA]
+    for dm in onboarding.welcome_dms(country_infos, GENERAL_DM, member.name):
         try:
-            await member.send(msg_to_send.format(user=member.name))
+            await member.send(dm)
         except discord.Forbidden:
             print(f"Could not DM {member.name} - they might have DMs disabled.")
+            return
 
 @bot.event
 async def on_member_join(member):

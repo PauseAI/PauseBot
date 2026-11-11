@@ -84,3 +84,28 @@ def onboarding_message(onboarder_ids, member_mention, country_name):
         return f"{mentions} : {member_mention} has joined from {country_name}!"
     return (f"{member_mention} has joined from {country_name}, but there's no Chapter Greeter "
             f"or National Leader for {country_name} to ping.")
+
+
+# Discord rejects messages longer than this
+DISCORD_MESSAGE_LIMIT = 2000
+
+
+def country_dm_prefix(info):
+    return f"Welcome to PauseAI in {info['name']} {info.get('flag', '')}".rstrip() + ":"
+
+
+def welcome_dms(country_infos, general_msg, user, now=None):
+    """The welcome DMs to send a member who picked these countries (COUNTRY_DATA entries), in order.
+
+    One DM per picked country that has its own "msg", each headed with that country's name and flag.
+    If none of them has one, the general welcome, unless any picked country is "noDM" (then nothing).
+    """
+    if now is None:
+        now = datetime.datetime.now(datetime.UTC)
+    settings = [country_settings(info, now) for info in country_infos]
+    country_dms = [f"{country_dm_prefix(s)}\n\n{s['msg'].format(user=user)}" for s in settings if s.get("msg")]
+    if country_dms:
+        return country_dms
+    if any(s.get("noDM") for s in settings):
+        return []
+    return [general_msg.format(user=user)]
