@@ -48,11 +48,18 @@ We also conduct welcome calls where you can meet others who are joining PauseAI,
  
 Lastly, you can find others near you who are organizing in communities: <#1171376873721298984>"""
 
+FRANCE_DM = """Bienvenue {user} ! PauseAI France est animé par Pause IA, qui a son propre serveur Discord : https://discord.gg/vyXGd7AeGc
+C'est là-bas que ça se passe pour agir en France. Tu peux bien sûr rester sur ce serveur aussi !
+
+Welcome {user}! PauseAI France is run by Pause IA, which has its own Discord server: https://discord.gg/vyXGd7AeGc
+That's the place to get involved in France. You're still very welcome here too!"""
+
 # Unified definition for Countries (MailerSend Emails + YAGPDB Onboarder Pings)
 COUNTRY_DATA = {
     1188719374941560925: {"name": "UK", "onboarders": [335365981276995594, 925051691798233089], "msg": "", "noDM": True, "email": None},
     1188717849980702781: {"name": "US", "onboarders": [732773275238793266], "msg": "", "email": None},
-    1188719426552479824: {"name": "France", "onboarders": [456868543225528331], "msg": "", "email": None},
+    # France is run by Pause IA on its own Discord, so new members are pointed there instead of pinging anyone
+    1188719426552479824: {"name": "France", "onboarders": [], "msg": FRANCE_DM, "noPing": True, "email": None},
     1188719399117541396: {"name": "Germany", "onboarders": [775477651703726092], "msg": "", "email": "germany@pauseai.info"},
     1188719443954643035: {"name": "Netherlands", "onboarders": [1363472971141746718], "msg": "", "email": None},
     1188719729662234624: {"name": "Italy", "onboarders": [1217966947057139762], "msg": "", "email": None},
@@ -573,13 +580,14 @@ async def on_member_update(before, after):
     for role in added_country_roles:
         info = COUNTRY_DATA[role.id]
         
-        # 1. Ping Staff in Onboarding Channel
+        # 1. Ping Staff in Onboarding Channel (skipped for noPing countries)
         if channel:
             role_ids = onboarding_tier_role_ids.get(after.guild.id, {})
             tier_roles = [after.guild.get_role(role_ids[name]) if name in role_ids else None
                           for name in onboarding.TIER_ROLE_NAMES]
-            onboarder_ids = onboarding.resolve_onboarders(info.get("onboarders"), role, tier_roles, after.id)
-            await channel.send(onboarding.onboarding_message(onboarder_ids, after.mention, info["name"]))
+            ping_msg, onboarder_ids = onboarding.onboarding_ping(info, role, tier_roles, after.id, after.mention)
+            if ping_msg:
+                await channel.send(ping_msg)
             if onboarder_ids:
                 onboarding_notification = True
             

@@ -45,6 +45,18 @@ def resolve_onboarders(static_ids, country_role, tier_roles, joining_member_id):
     return []
 
 
+def onboarding_ping(info, country_role, tier_roles, joining_member_id, member_mention):
+    """(message to post in #onboarding-pipeline, IDs it pings) for one country's COUNTRY_DATA entry.
+
+    A country with "noPing" set posts nothing at all, not even the "nobody to ping" message,
+    so the message is None.
+    """
+    if info.get("noPing"):
+        return None, []
+    ids = resolve_onboarders(info.get("onboarders"), country_role, tier_roles, joining_member_id)
+    return onboarding_message(ids, member_mention, info["name"]), ids
+
+
 def onboarding_message(onboarder_ids, member_mention, country_name):
     if onboarder_ids:
         mentions = " ".join(f"<@{uid}>" for uid in onboarder_ids)

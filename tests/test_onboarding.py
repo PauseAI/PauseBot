@@ -83,3 +83,41 @@ def test_find_role_by_name():
 
 def test_greeter_tier_is_tried_first():
     assert onboarding.TIER_ROLE_NAMES == ("Chapter Greeter", "National Leader")
+
+
+def test_no_ping_country_posts_nothing():
+    info = {"name": "France", "onboarders": [ALICE], "noPing": True}
+    country = role(member_ids=[BOB, NEWBIE])
+    tiers = [role(member_ids=[BOB]), role(member_ids=[BOB])]
+
+    assert onboarding.onboarding_ping(info, country, tiers, NEWBIE, "<@99>") == (None, [])
+
+
+def test_no_ping_country_skips_nobody_to_ping_message():
+    info = {"name": "France", "onboarders": [], "noPing": True}
+    assert onboarding.onboarding_ping(info, role(), [None, None], NEWBIE, "<@99>") == (None, [])
+
+
+def test_country_without_no_ping_still_pings():
+    info = {"name": "Israel", "onboarders": []}
+    country = role(member_ids=[BOB, NEWBIE])
+    msg, ids = onboarding.onboarding_ping(info, country, [None, role(member_ids=[BOB])], NEWBIE, "<@99>")
+    assert ids == [BOB]
+    assert msg == "<@2> : <@99> has joined from Israel!"
+
+
+def test_country_without_no_ping_posts_nobody_to_ping_message():
+    info = {"name": "Israel", "onboarders": []}
+    msg, ids = onboarding.onboarding_ping(info, role(), [None, None], NEWBIE, "<@99>")
+    assert ids == []
+    assert "no Chapter Greeter or National Leader" in msg
+
+
+def test_france_is_no_ping_with_bilingual_dm():
+    import main
+    france = main.COUNTRY_DATA[1188719426552479824]
+    assert france["noPing"] is True
+    assert france["onboarders"] == []
+    dm = france["msg"].format(user="pat")
+    assert dm.index("Bienvenue pat") < dm.index("Welcome pat")
+    assert dm.count("https://discord.gg/vyXGd7AeGc") == 2
