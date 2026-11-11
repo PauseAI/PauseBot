@@ -1,9 +1,32 @@
 """Works out who to ping in #onboarding-pipeline when a member gets a country role."""
+import datetime
+
+# When role routing switches on: Fri 13 Nov 2026, 17:00 UK time (UTC in November).
+# Before it, a country's static "onboarders" list in COUNTRY_DATA wins whenever it's non-empty,
+# and a country's "beforeRoleRouting" values replace its own (so France keeps its old onboarder
+# and no Pause IA DM). From it, static lists are ignored: every country pings its Chapter Greeters,
+# then its National Leaders, and "beforeRoleRouting" no longer applies.
+# To postpone the switch, change this and redeploy.
+ROLE_ROUTING_FROM = datetime.datetime(2026, 11, 13, 17, 0, tzinfo=datetime.UTC)
 
 # Tried in this order: the first role with anyone in the country is the one pinged
 CHAPTER_GREETER_ROLE_NAME = "Chapter Greeter"
 NATIONAL_LEADER_ROLE_NAME = "National Leader"
 TIER_ROLE_NAMES = (CHAPTER_GREETER_ROLE_NAME, NATIONAL_LEADER_ROLE_NAME)
+
+
+def role_routing_active(now=None):
+    if now is None:
+        now = datetime.datetime.now(datetime.UTC)
+    return now >= ROLE_ROUTING_FROM
+
+
+def country_settings(info, now=None):
+    """A COUNTRY_DATA entry as it applies at `now`: before the switch, its "beforeRoleRouting"
+    values replace its own."""
+    if role_routing_active(now):
+        return info
+    return {**info, **info.get("beforeRoleRouting", {})}
 
 
 def find_role_by_name(guild, name):
@@ -45,15 +68,18 @@ def resolve_onboarders(static_ids, country_role, tier_roles, joining_member_id):
     return []
 
 
-def onboarding_ping(info, country_role, tier_roles, joining_member_id, member_mention):
+def onboarding_ping(info, country_role, tier_roles, joining_member_id, member_mention, now=None):
     """(message to post in #onboarding-pipeline, IDs it pings) for one country's COUNTRY_DATA entry.
 
     A country with "noPing" set posts nothing at all, not even the "nobody to ping" message,
-    so the message is None.
+    so the message is None. Static onboarders lists only count before ROLE_ROUTING_FROM.
     """
+    routing = role_routing_active(now)
+    info = country_settings(info, now)
     if info.get("noPing"):
         return None, []
-    ids = resolve_onboarders(info.get("onboarders"), country_role, tier_roles, joining_member_id)
+    static_ids = None if routing else info.get("onboarders")
+    ids = resolve_onboarders(static_ids, country_role, tier_roles, joining_member_id)
     return onboarding_message(ids, member_mention, info["name"]), ids
 
 

@@ -1,4 +1,6 @@
+import datetime
 from types import SimpleNamespace as NS
+import main
 import onboarding
 
 ALICE, BOB, CAROL, DAVE, NEWBIE = 1, 2, 3, 4, 99
@@ -85,39 +87,87 @@ def test_greeter_tier_is_tried_first():
     assert onboarding.TIER_ROLE_NAMES == ("Chapter Greeter", "National Leader")
 
 
+BEFORE = onboarding.ROLE_ROUTING_FROM - datetime.timedelta(seconds=1)
+AFTER = onboarding.ROLE_ROUTING_FROM
+FRANCE_ID = 1188719426552479824
+FRANCE_OLD_ONBOARDER = 456868543225528331
+
+
+def ping(info, country, tiers, now):
+    return onboarding.onboarding_ping(info, country, tiers, NEWBIE, "<@99>", now=now)
+
+
+def test_switch_is_fri_13_nov_17_00_uk():
+    assert onboarding.ROLE_ROUTING_FROM.isoformat() == "2026-11-13T17:00:00+00:00"
+    assert not onboarding.role_routing_active(BEFORE)
+    assert onboarding.role_routing_active(AFTER)
+
+
+def test_before_switch_static_list_wins():
+    info = {"name": "UK", "onboarders": [ALICE]}
+    country = role(member_ids=[BOB, NEWBIE])
+    msg, ids = ping(info, country, [role(member_ids=[BOB]), None], BEFORE)
+    assert ids == [ALICE]
+
+
+def test_after_switch_static_list_is_ignored():
+    info = {"name": "UK", "onboarders": [ALICE]}
+    country = role(member_ids=[BOB, CAROL, NEWBIE])
+    tiers = [role(member_ids=[BOB]), role(member_ids=[CAROL])]
+    assert ping(info, country, tiers, AFTER)[1] == [BOB]
+    # No greeter in the country: National Leaders
+    assert ping(info, country, [None, role(member_ids=[CAROL])], AFTER)[1] == [CAROL]
+
+
+def test_after_switch_static_list_with_nobody_by_role_posts_nobody_to_ping():
+    info = {"name": "UK", "onboarders": [ALICE]}
+    msg, ids = ping(info, role(member_ids=[NEWBIE]), [None, None], AFTER)
+    assert ids == []
+    assert "no Chapter Greeter or National Leader for UK" in msg
+
+
+def test_countries_without_static_list_use_roles_on_both_sides_of_switch():
+    info = {"name": "Israel", "onboarders": []}
+    country = role(member_ids=[BOB, CAROL, NEWBIE])
+    tiers = [role(member_ids=[BOB]), role(member_ids=[CAROL])]
+    for now in (BEFORE, AFTER):
+        msg, ids = ping(info, country, tiers, now)
+        assert ids == [BOB]
+        assert msg == "<@2> : <@99> has joined from Israel!"
+        assert ping(info, country, [None, role(member_ids=[CAROL])], now)[1] == [CAROL]
+        assert "no Chapter Greeter or National Leader" in ping(info, role(), [None, None], now)[0]
+
+
 def test_no_ping_country_posts_nothing():
-    info = {"name": "France", "onboarders": [ALICE], "noPing": True}
+    info = {"name": "X", "onboarders": [ALICE], "noPing": True}
     country = role(member_ids=[BOB, NEWBIE])
     tiers = [role(member_ids=[BOB]), role(member_ids=[BOB])]
-
-    assert onboarding.onboarding_ping(info, country, tiers, NEWBIE, "<@99>") == (None, [])
-
-
-def test_no_ping_country_skips_nobody_to_ping_message():
-    info = {"name": "France", "onboarders": [], "noPing": True}
-    assert onboarding.onboarding_ping(info, role(), [None, None], NEWBIE, "<@99>") == (None, [])
+    for now in (BEFORE, AFTER):
+        assert ping(info, country, tiers, now) == (None, [])
+        assert ping({**info, "onboarders": []}, role(), [None, None], now) == (None, [])
 
 
-def test_country_without_no_ping_still_pings():
-    info = {"name": "Israel", "onboarders": []}
+def test_france_before_switch_pings_old_onboarder_with_general_dm():
+    france = main.COUNTRY_DATA[FRANCE_ID]
     country = role(member_ids=[BOB, NEWBIE])
-    msg, ids = onboarding.onboarding_ping(info, country, [None, role(member_ids=[BOB])], NEWBIE, "<@99>")
-    assert ids == [BOB]
-    assert msg == "<@2> : <@99> has joined from Israel!"
+    msg, ids = ping(france, country, [role(member_ids=[BOB]), None], BEFORE)
+    assert ids == [FRANCE_OLD_ONBOARDER]
+    assert msg == f"<@{FRANCE_OLD_ONBOARDER}> : <@99> has joined from France!"
+    settings = onboarding.country_settings(france, BEFORE)
+    assert not settings.get("noPing")
+    assert settings["msg"] == ""  # so the general welcome DM is sent
 
 
-def test_country_without_no_ping_posts_nobody_to_ping_message():
-    info = {"name": "Israel", "onboarders": []}
-    msg, ids = onboarding.onboarding_ping(info, role(), [None, None], NEWBIE, "<@99>")
-    assert ids == []
-    assert "no Chapter Greeter or National Leader" in msg
-
-
-def test_france_is_no_ping_with_bilingual_dm():
-    import main
-    france = main.COUNTRY_DATA[1188719426552479824]
-    assert france["noPing"] is True
-    assert france["onboarders"] == []
-    dm = france["msg"].format(user="pat")
+def test_france_after_switch_posts_nothing_and_sends_bilingual_dm():
+    france = main.COUNTRY_DATA[FRANCE_ID]
+    country = role(member_ids=[BOB, NEWBIE])
+    assert ping(france, country, [role(member_ids=[BOB]), None], AFTER) == (None, [])
+    dm = onboarding.country_settings(france, AFTER)["msg"].format(user="pat")
     assert dm.index("Bienvenue pat") < dm.index("Welcome pat")
     assert dm.count("https://discord.gg/vyXGd7AeGc") == 2
+
+
+def test_country_settings_without_overrides_is_unchanged():
+    info = {"name": "UK", "onboarders": [ALICE], "noDM": True}
+    assert onboarding.country_settings(info, BEFORE) == info
+    assert onboarding.country_settings(info, AFTER) == info

@@ -55,11 +55,14 @@ Welcome {user}! PauseAI France is run by Pause IA, which has its own Discord ser
 That's the place to get involved in France. You're still very welcome here too!"""
 
 # Unified definition for Countries (MailerSend Emails + YAGPDB Onboarder Pings)
+# "onboarders" lists only apply until onboarding.ROLE_ROUTING_FROM; after that, every country pings by role.
 COUNTRY_DATA = {
     1188719374941560925: {"name": "UK", "onboarders": [335365981276995594, 925051691798233089], "msg": "", "noDM": True, "email": None},
     1188717849980702781: {"name": "US", "onboarders": [732773275238793266], "msg": "", "email": None},
-    # France is run by Pause IA on its own Discord, so new members are pointed there instead of pinging anyone
-    1188719426552479824: {"name": "France", "onboarders": [], "msg": FRANCE_DM, "noPing": True, "email": None},
+    # France is run by Pause IA on its own Discord, so from onboarding.ROLE_ROUTING_FROM new members are
+    # pointed there instead of pinging anyone. Until then, beforeRoleRouting keeps its old behaviour.
+    1188719426552479824: {"name": "France", "onboarders": [], "msg": FRANCE_DM, "noPing": True, "email": None,
+                          "beforeRoleRouting": {"onboarders": [456868543225528331], "msg": "", "noPing": False}},
     1188719399117541396: {"name": "Germany", "onboarders": [775477651703726092], "msg": "", "email": "germany@pauseai.info"},
     1188719443954643035: {"name": "Netherlands", "onboarders": [1363472971141746718], "msg": "", "email": None},
     1188719729662234624: {"name": "Italy", "onboarders": [1217966947057139762], "msg": "", "email": None},
@@ -73,7 +76,7 @@ COUNTRY_DATA = {
     1188719899401523330: {"name": "Sweden", "onboarders": [269204846572339211], "msg": "", "email": None},
     1188719610384633918: {"name": "Czech", "onboarders": [971680888960208926], "msg": "", "email": None},
     1256260218162122843: {"name": "Kenya", "onboarders": [853298855310000148], "msg": "", "email": None},
-    # An empty onboarders list pings members with this country role and Chapter Greeter, or failing that National Leader
+    # No static list: pings members with this country role and Chapter Greeter, or failing that National Leader
     1188719747282518130: {"name": "Israel", "onboarders": [], "msg": "", "email": None},
     1188719975796584479: {"name": "South Korea", "onboarders": [], "msg": "", "email": None},
 }
@@ -459,6 +462,8 @@ onboarding_tier_role_ids = {}
 @bot.event
 async def on_ready():
     print(f'Ready! Logged in as {bot.user}')
+    routing_state = "active" if onboarding.role_routing_active() else "not active yet"
+    print(f"Onboarding role routing is {routing_state} (switches on at {onboarding.ROLE_ROUTING_FROM.isoformat()})")
     for guild in bot.guilds:
         if not is_active_guild(guild.id):
             continue
@@ -526,7 +531,7 @@ async def send_delayed_welcome_dm(member):
     no_dm = False
 
     if matched_countries:
-        country_info = COUNTRY_DATA[matched_countries[0]]
+        country_info = onboarding.country_settings(COUNTRY_DATA[matched_countries[0]])
         if country_info.get("noDM"):
             no_dm = True
         elif country_info.get("msg"):
