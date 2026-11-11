@@ -38,11 +38,11 @@ ONBOARDING_PIPELINE_CHANNEL_ID = 1174807044990193775
 AIRTABLE_BASE_ID = "appWPTGqZmUcs3NWu"
 AIRTABLE_TABLE_ID = "tblxeqggeTWU7Y8ME"
 GENERAL_DM = """Welcome to the PauseAI Global Discord, {user}!
-We're delighted to have you join us. Please make sure you have also signed up via our Join form [here](https://pauseai.info/join). 
+We're delighted to have you join us.
  
 Feel free to introduce yourself in the <#1101804381755686972> – it's always nice to know who's joining us. 
  
-If you’re looking for an immediate action to take, check out [MicroCommit](https://microcommit.io/onboarding?org=135fcd8d-8116-44af-b885-14df992f9a8c), a platform where you can follow us and get weekly small tasks anyone can help with!
+If you’re looking for an immediate action to take, join up at [pauseai.info/join](https://pauseai.info/join).
  
 We also conduct welcome calls where you can meet others who are joining PauseAI, you can check them out [here](https://luma.com/PauseAI?tag=welcome).
  
@@ -57,7 +57,7 @@ That's the place to get involved in France. You're still very welcome here too!"
 # Unified definition for Countries (MailerSend Emails + YAGPDB Onboarder Pings)
 # "onboarders" lists only apply until onboarding.ROLE_ROUTING_FROM; after that, every country pings by role.
 COUNTRY_DATA = {
-    1188719374941560925: {"name": "UK", "flag": "🇬🇧", "onboarders": [335365981276995594, 925051691798233089], "msg": "", "noDM": True, "email": None},
+    1188719374941560925: {"name": "UK", "flag": "🇬🇧", "onboarders": [335365981276995594, 925051691798233089], "msg": "", "email": None},
     1188717849980702781: {"name": "US", "flag": "🇺🇸", "onboarders": [732773275238793266], "msg": "", "email": None},
     # France is run by Pause IA on its own Discord, so from onboarding.ROLE_ROUTING_FROM new members are
     # pointed there instead of pinging anyone. Until then, beforeRoleRouting keeps its old behaviour.

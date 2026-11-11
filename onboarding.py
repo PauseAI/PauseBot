@@ -97,15 +97,11 @@ def country_dm_prefix(info):
 def welcome_dms(country_infos, general_msg, user, now=None):
     """The welcome DMs to send a member who picked these countries (COUNTRY_DATA entries), in order.
 
-    One DM per picked country that has its own "msg", each headed with that country's name and flag.
-    If none of them has one, the general welcome, unless any picked country is "noDM" (then nothing).
+    Always the general welcome first, then one DM per picked country that has its own "msg",
+    each headed with that country's name and flag.
     """
     if now is None:
         now = datetime.datetime.now(datetime.UTC)
     settings = [country_settings(info, now) for info in country_infos]
     country_dms = [f"{country_dm_prefix(s)}\n\n{s['msg'].format(user=user)}" for s in settings if s.get("msg")]
-    if country_dms:
-        return country_dms
-    if any(s.get("noDM") for s in settings):
-        return []
-    return [general_msg.format(user=user)]
+    return [general_msg.format(user=user), *country_dms]

@@ -161,7 +161,7 @@ def test_france_after_switch_posts_nothing_and_sends_bilingual_dm():
 
 
 def test_country_settings_without_overrides_is_unchanged():
-    info = {"name": "UK", "onboarders": [ALICE], "noDM": True}
+    info = {"name": "UK", "onboarders": [ALICE]}
     assert onboarding.country_settings(info, BEFORE) == info
     assert onboarding.country_settings(info, AFTER) == info
 
@@ -183,26 +183,33 @@ def test_countries_without_own_msg_get_one_general_welcome():
     assert dms(US, GERMANY) == [main.GENERAL_DM.format(user="pat")]
 
 
-def test_no_dm_country_suppresses_general_welcome():
-    assert dms(UK) == []
-    assert dms(GERMANY, UK) == []
+def test_uk_gets_general_welcome():
+    assert dms(UK) == [main.GENERAL_DM.format(user="pat")]
+    assert not any("noDM" in info for info in main.COUNTRY_DATA.values())
 
 
-def test_france_dm_is_headed_with_country_and_flag():
-    [dm] = dms(main.COUNTRY_DATA[FRANCE_ID])
-    assert dm.startswith("Welcome to PauseAI in France 🇫🇷:\n\nBienvenue pat")
+def test_france_gets_general_welcome_then_its_own_dm():
+    general, france_dm = dms(main.COUNTRY_DATA[FRANCE_ID])
+    assert general == main.GENERAL_DM.format(user="pat")
+    assert france_dm.startswith("Welcome to PauseAI in France 🇫🇷:\n\nBienvenue pat")
 
 
-def test_france_dm_sent_whatever_order_alongside_no_dm_country():
+def test_france_dm_sent_whatever_order_alongside_uk():
     france = main.COUNTRY_DATA[FRANCE_ID]
     assert dms(UK, france) == dms(france, UK) == dms(france)
 
 
-def test_one_dm_per_country_with_own_msg():
+def test_general_welcome_then_one_dm_per_country_with_own_msg():
     a = {"name": "A", "flag": "🇦🇦", "msg": "hi {user} from A"}
     b = {"name": "B", "msg": "hi {user} from B"}
-    assert dms(a, US, b) == ["Welcome to PauseAI in A 🇦🇦:\n\nhi pat from A",
+    assert dms(a, US, b) == [main.GENERAL_DM.format(user="pat"),
+                             "Welcome to PauseAI in A 🇦🇦:\n\nhi pat from A",
                              "Welcome to PauseAI in B:\n\nhi pat from B"]
+
+
+def test_general_welcome_asks_to_join_once_without_microcommit():
+    assert main.GENERAL_DM.count("pauseai.info/join)") == 1
+    assert "MicroCommit" not in main.GENERAL_DM
 
 
 def test_france_before_switch_gets_general_welcome():
