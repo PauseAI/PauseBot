@@ -18,11 +18,28 @@ TIER_ROLE_NAMES = (CHAPTER_GREETER_ROLE_NAME, NATIONAL_LEADER_ROLE_NAME)
 # Volunteer Agreement and linked Discord. Not "Wants to help", which is only an onboarding answer.
 JOINED_ROLE_NAME = "Wants to volunteer"
 
+# A member who joined the server longer ago than this and gains a country role is an existing
+# member adding a country, not a new member joining. New members pick their countries in
+# onboarding within minutes of joining (or of passing rules screening); a day leaves room for
+# someone who joins and only gets round to it later that day, while anyone adding a country
+# days or months later is clearly an existing member.
+EXISTING_MEMBER_AFTER = datetime.timedelta(days=1)
+
 
 def role_routing_active(now=None):
     if now is None:
         now = datetime.datetime.now(datetime.UTC)
     return now >= ROLE_ROUTING_FROM
+
+
+def is_existing_member(joined_at, now=None):
+    """Whether a member who joined the server at joined_at is an existing member rather than a
+    new one (see EXISTING_MEMBER_AFTER). An unknown joined_at counts as new, as it always did."""
+    if joined_at is None:
+        return False
+    if now is None:
+        now = datetime.datetime.now(datetime.UTC)
+    return now - joined_at > EXISTING_MEMBER_AFTER
 
 
 def country_settings(info, now=None):
@@ -89,16 +106,20 @@ def onboarder_title(info, tier_roles, member_id, now=None):
 
 
 def onboarding_ping(info, country_role, tier_roles, joining_member_id, member_mention, now=None,
-                    added_tier_names=()):
+                    added_tier_names=(), joined_at=None):
     """(message to post in #onboarding-pipeline, IDs it pings) for one country's COUNTRY_DATA entry.
 
     A country with "noPing" set posts nothing at all, not even the "nobody to ping" message,
     so the message is None. Static onboarders lists only count before ROLE_ROUTING_FROM.
 
     A member who is themselves an onboarder for the country (see onboarder_title) isn't a new
-    member joining: the post just notes they picked up the role, and pings nobody. If what makes
-    them an onboarder is a tier role in added_tier_names (gained in the same update), nothing is
-    posted here, since tier_role_message announces it.
+    member joining: the post just notes they picked up the role, and pings nobody. If only tier
+    roles in added_tier_names (gained in the same update, and announced by tier_role_message)
+    make them an onboarder, nothing is posted here.
+
+    Otherwise the country's onboarders are pinged, with the same routing for a new member and
+    for an existing one (see is_existing_member, from joined_at) adding a country: only the
+    wording differs.
     """
     if now is None:
         # Read the clock once, so every check agrees right at the switch
@@ -107,14 +128,27 @@ def onboarding_ping(info, country_role, tier_roles, joining_member_id, member_me
     settings = country_settings(info, now)
     if settings.get("noPing"):
         return None, []
-    title = onboarder_title(info, tier_roles, joining_member_id, now)
-    if title in added_tier_names:
+    # What made them an onboarder before this update: tier roles it added don't count
+    held_before = [None if name in added_tier_names else r for name, r in zip(TIER_ROLE_NAMES, tier_roles)]
+    title = onboarder_title(info, held_before, joining_member_id, now)
+    if not title and onboarder_title(info, tier_roles, joining_member_id, now):
         return None, []
     if title:
         return picked_up_message(member_mention, settings["name"], title), []
     static_ids = None if routing else settings.get("onboarders")
     ids = resolve_onboarders(static_ids, country_role, tier_roles, joining_member_id)
+    if is_existing_member(joined_at, now):
+        return added_country_message(ids, member_mention, settings["name"], joined_at), ids
     return onboarding_message(ids, member_mention, settings["name"]), ids
+
+
+def added_country_message(onboarder_ids, member_mention, country_name, joined_at):
+    """The post for an existing member (one who joined at joined_at) adding a country."""
+    member = f"{member_mention} (member since {joined_at.strftime('%b %Y')}) added {country_name}"
+    if onboarder_ids:
+        mentions = " ".join(f"<@{uid}>" for uid in onboarder_ids)
+        return f"{mentions} : {member}"
+    return f"{member}, but there's no Chapter Greeter or National Leader for {country_name} to ping."
 
 
 def picked_up_message(member_mention, country_name, title):
@@ -172,8 +206,27 @@ def welcome_dms(country_infos, general_msg, user, now=None, skip_paragraph=None)
     """
     if skip_paragraph:
         general_msg = general_msg.replace(skip_paragraph + "\n \n", "", 1)
+    return [general_msg.format(user=user), *country_dms(country_infos, user, now)]
+
+
+def country_dms(country_infos, user, now=None):
+    """One DM per country (COUNTRY_DATA entry) that has its own "msg", in order, each headed with
+    that country's name and flag. On its own, this is what an existing member adding a country
+    is sent: no general welcome."""
     if now is None:
         now = datetime.datetime.now(datetime.UTC)
     settings = [country_settings(info, now) for info in country_infos]
-    country_dms = [f"{country_dm_prefix(s)}\n\n{s['msg'].format(user=user)}" for s in settings if s.get("msg")]
-    return [general_msg.format(user=user), *country_dms]
+    return [f"{country_dm_prefix(s)}\n\n{s['msg'].format(user=user)}" for s in settings if s.get("msg")]
+
+
+def added_country_dms(country_infos, tier_roles, member_id, user, joined_at, now=None):
+    """The DMs for a member who just gained these country roles (COUNTRY_DATA entries) outside
+    the delayed welcome: only an existing member (see is_existing_member) gets any, and then only
+    the countries' own DMs (see country_dms), leaving out countries they're an onboarder for.
+    New members get theirs from the delayed welcome instead."""
+    if now is None:
+        now = datetime.datetime.now(datetime.UTC)
+    if not is_existing_member(joined_at, now):
+        return []
+    infos = [info for info in country_infos if not onboarder_title(info, tier_roles, member_id, now)]
+    return country_dms(infos, user, now)

@@ -427,13 +427,16 @@ async def on_member_update(before, after):
     now = datetime.datetime.now(datetime.UTC)
 
     # Became a Chapter Greeter / National Leader: announce it for every country role they hold,
-    # including any gained in this same update (their own "joined" post is then skipped)
+    # including any gained in this same update (their own "joined" post is then skipped, but only
+    # if the announcement went out)
+    announced_tier_names = []
     if added_tier_names and channel:
         held_countries = [COUNTRY_DATA[r.id] for r in after.roles if r.id in COUNTRY_DATA]
         tier_msg = onboarding.tier_role_message(added_tier_names, held_countries, after.mention, now)
         if tier_msg:
             try:
                 await channel.send(tier_msg)
+                announced_tier_names = added_tier_names
             except discord.HTTPException as e:
                 print(f"Error posting tier role post for {after.name}: {e}")
 
@@ -452,7 +455,8 @@ async def on_member_update(before, after):
         # 1. Ping Staff in Onboarding Channel (skipped for noPing countries)
         if channel:
             ping_msg, onboarder_ids = onboarding.onboarding_ping(
-                info, role, tier_roles, after.id, after.mention, now=now, added_tier_names=added_tier_names)
+                info, role, tier_roles, after.id, after.mention, now=now,
+                added_tier_names=announced_tier_names, joined_at=after.joined_at)
             if ping_msg:
                 # A failed post shouldn't stop the email and the record update below
                 try:
@@ -487,6 +491,18 @@ async def on_member_update(before, after):
                         print(f"Error from MailerSend for {target_email}: {response.status} - {response_text}")
             except Exception as e:
                 print(f"Error sending email to {target_email}: {e}")
+
+    # An existing member adding a country gets that country's own welcome now (new members get
+    # theirs, with the general welcome, from send_delayed_welcome_dm)
+    added_infos = [COUNTRY_DATA[role.id] for role in added_country_roles]
+    for dm in onboarding.added_country_dms(added_infos, tier_roles, after.id, after.name, after.joined_at, now):
+        try:
+            await after.send(dm)
+        except discord.Forbidden:
+            print(f"Could not DM {after.name} - they might have DMs disabled.")
+            break
+        except discord.HTTPException as e:
+            print(f"Error sending country DM to {after.name}: {e}")
 
     print(f"User {after.name} received country role(s)! Updating their record and notifying coordinators.")
     await sync_member_record(after, onboarding_notification=onboarding_notification)
