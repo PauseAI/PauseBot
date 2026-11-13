@@ -257,21 +257,15 @@ async def sync_member_record(member, onboarding_notification=False):
     )
 
 async def link_to_civicrm(member):
-    """Asks CiviCRM to link the member to their member record. Returns True once linked. A refusal
-    (no member gave this username yet, or more than one did) is retried by the next daily sweep."""
-    if not CIVICRM_URL or not CIVICRM_API_KEY:
-        return False
-    try:
-        answer = await civicrm.link(http_session, CIVICRM_URL, CIVICRM_API_KEY, member.id, member.name)
-    except civicrm.LinkError as e:
-        print(f"Error linking {member.name} in CiviCRM: {e}")
-        return False
+    """Asks CiviCRM to link the member to their member record. Returns CiviCRM's refusal reason, or None
+    once linked. A refusal (no member gave this username yet, or more than one did) is retried by the
+    next daily sweep. Raises civicrm.LinkError when CiviCRM doesn't answer."""
+    answer = await civicrm.link(http_session, CIVICRM_URL, CIVICRM_API_KEY, member.id, member.name)
     if answer["status"] != "ok":
-        print(f"CiviCRM did not link {member.name}: {answer.get('reason')}")
-        return False
+        return answer.get("reason") or "refused"
     await db.mark_linked(db_pool, member.id, member.name)
     print(f"CiviCRM linked {member.name}.")
-    return True
+    return None
 
 @tasks.loop(hours=24)
 async def daily_civicrm_link_sweep():
@@ -292,7 +286,11 @@ async def daily_civicrm_link_sweep():
         newly_linked = 0
         for member in unlinked:
             try:
-                newly_linked += await link_to_civicrm(member)
+                newly_linked += await link_to_civicrm(member) is None
+            except civicrm.LinkError as e:
+                # Every other call would fail the same way: try again tomorrow
+                print(f"Stopping the CiviCRM link sweep, CiviCRM didn't answer: {e}")
+                break
             except Exception as e:
                 print(f"Error linking {member.name}: {e}")
         print(f"CiviCRM linked {newly_linked} of them.")
@@ -353,8 +351,14 @@ async def _handle_member_join(member):
     member = guild.get_member(member.id)
     if not member:
         return
-    await sync_member_record(member)
-    await link_to_civicrm(member)
+    try:
+        await sync_member_record(member)
+        if CIVICRM_URL and CIVICRM_API_KEY:
+            reason = await link_to_civicrm(member)
+            if reason:
+                print(f"CiviCRM did not link {member.name}: {reason}")
+    except Exception as e:
+        print(f"Error saving or linking new member {member.name}: {e}")
 
 async def send_delayed_welcome_dm(member):
     """Wait temporarily after joining/screening to give the user time to settle, then send a DM."""

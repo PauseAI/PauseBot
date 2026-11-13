@@ -25,7 +25,7 @@ async def link(session, base_url, api_key, discord_user_id, username):
         async with session.post(url, headers=headers, data={"params": json.dumps(params)},
                                 timeout=LINK_TIMEOUT) as response:
             if response.status != 200:
-                raise LinkError(f"HTTP {response.status}")
+                raise LinkError(f"HTTP {response.status}: {(await response.text())[:200]}")
             body = await response.json(content_type=None)
     except (aiohttp.ClientError, TimeoutError, ValueError) as e:
         raise LinkError(repr(e)) from e

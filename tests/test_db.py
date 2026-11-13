@@ -203,6 +203,13 @@ async def test_leaving_saves_roles_and_rejoining_clears_left_at(pool):
     assert await pool.fetchval("SELECT left_at FROM discord_members WHERE id = 1") is None
 
 
+async def test_leaving_again_before_a_sync_keeps_the_saved_roles(pool):
+    await save(pool)
+    await db.mark_left(pool, 1, "ann", NOW, [10, 13], ["UK", "Wants to volunteer"])
+    await db.mark_left(pool, 1, "ann", NOW, [], [])
+    assert await db.saved_roles(pool, 1) == ([10, 13], ["UK", "Wants to volunteer"])
+
+
 async def test_leaving_before_the_first_save_still_saves_roles(pool):
     await db.mark_left(pool, 2, "bob", NOW, [10], ["UK"])
     assert await db.saved_roles(pool, 2) == ([10], ["UK"])

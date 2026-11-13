@@ -159,8 +159,10 @@ async def mark_left(pool, member_id, username, left_at, role_ids, role_names):
     await pool.execute(
         """
         INSERT INTO discord_members (id, username, left_at, role_ids, role_names) VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (id) DO UPDATE SET left_at = EXCLUDED.left_at, role_ids = EXCLUDED.role_ids,
-            role_names = EXCLUDED.role_names
+        ON CONFLICT (id) DO UPDATE SET left_at = EXCLUDED.left_at,
+            -- A member who rejoins and leaves again before their record is synced keeps the roles saved before
+            role_ids = CASE WHEN discord_members.left_at IS NULL THEN EXCLUDED.role_ids ELSE discord_members.role_ids END,
+            role_names = CASE WHEN discord_members.left_at IS NULL THEN EXCLUDED.role_names ELSE discord_members.role_names END
         """,
         member_id, username, left_at, list(role_ids), list(role_names),
     )
