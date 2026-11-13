@@ -68,6 +68,15 @@ def test_joining_member_is_never_pinged():
     assert resolve([NEWBIE, ALICE], country, greeters, leaders) == [ALICE]
 
 
+def test_static_list_of_only_the_joining_member_falls_back_to_tiers():
+    country = role(member_ids=[NEWBIE, BOB, CAROL])
+    greeters = role(member_ids=[BOB])
+    leaders = role(member_ids=[CAROL])
+    assert resolve([NEWBIE], country, greeters, leaders) == [BOB]
+    assert resolve([NEWBIE], country, None, leaders) == [CAROL]
+    assert resolve([NEWBIE], country, None, None) == []
+
+
 def test_onboarders_are_deduplicated():
     assert resolve([ALICE, BOB, ALICE], role(), None, None) == [ALICE, BOB]
 
@@ -271,3 +280,106 @@ def test_member_who_has_not_joined_keeps_join_paragraph():
 def test_skipping_join_paragraph_leaves_country_dms_alone():
     france = main.COUNTRY_DATA[FRANCE_ID]
     assert dms(france, skip=main.GENERAL_DM_JOIN_PARAGRAPH)[1:] == dms(france)[1:]
+
+
+SPAIN = main.COUNTRY_DATA[1188720344882753566]
+SPAIN_ONBOARDER = SPAIN["onboarders"][0]
+
+
+def own_ping(info, country, tiers, member_id, now, added=()):
+    return onboarding.onboarding_ping(info, country, tiers, member_id, "<@dani>", now=now,
+                                      added_tier_names=added)
+
+
+def test_static_onboarder_picking_up_own_country_role_before_switch():
+    country = role(member_ids=[SPAIN_ONBOARDER, BOB])
+    tiers = [role(member_ids=[BOB]), None]
+    assert own_ping(SPAIN, country, tiers, SPAIN_ONBOARDER, BEFORE) == (
+        "<@dani> (Spain onboarder) picked up the Spain role", [])
+
+
+def test_static_list_no_longer_makes_an_onboarder_after_switch():
+    country = role(member_ids=[SPAIN_ONBOARDER, BOB])
+    tiers = [role(member_ids=[BOB]), None]
+    msg, ids = own_ping(SPAIN, country, tiers, SPAIN_ONBOARDER, AFTER)
+    assert ids == [BOB]
+    assert msg == "<@2> : <@dani> has joined from Spain!"
+
+
+def test_greeter_picking_up_country_role_pings_nobody():
+    country = role(member_ids=[DAVE, BOB])
+    for now in (BEFORE, AFTER):
+        # Chapter Greeter wins over being on the static list
+        msg, ids = own_ping({"name": "Spain", "onboarders": [DAVE]}, country,
+                            [role(member_ids=[DAVE, BOB]), None], DAVE, now)
+        assert (msg, ids) == ("<@dani> (Spain Chapter Greeter) picked up the Spain role", [])
+
+
+def test_national_leader_picking_up_country_role_pings_nobody():
+    country = role(member_ids=[DAVE, BOB])
+    tiers = [role(member_ids=[BOB]), role(member_ids=[DAVE])]
+    assert own_ping({"name": "Israel", "onboarders": []}, country, tiers, DAVE, AFTER) == (
+        "<@dani> (Israel National Leader) picked up the Israel role", [])
+
+
+def test_onboarder_picking_up_no_ping_country_posts_nothing():
+    france = main.COUNTRY_DATA[FRANCE_ID]
+    country = role(member_ids=[DAVE])
+    assert own_ping(france, country, [role(member_ids=[DAVE]), None], DAVE, AFTER) == (None, [])
+    # Before the switch France still pings, so its old onboarder picking it up is noted
+    assert own_ping(france, country, [None, None], FRANCE_OLD_ONBOARDER, BEFORE)[0] == (
+        "<@dani> (France onboarder) picked up the France role")
+
+
+def test_country_and_tier_role_in_one_update_leaves_post_to_tier_message():
+    country = role(member_ids=[DAVE])
+    tiers = [role(member_ids=[DAVE]), None]
+    for now in (BEFORE, AFTER):
+        assert own_ping(SPAIN, country, tiers, DAVE, now, added=["Chapter Greeter"]) == (None, [])
+    # Unless they were already a National Leader, which is what makes them its onboarder
+    tiers = [None, role(member_ids=[DAVE])]
+    assert own_ping(SPAIN, country, tiers, DAVE, AFTER, added=["Chapter Greeter"])[0] == (
+        "<@dani> (Spain National Leader) picked up the Spain role")
+
+
+def test_onboarder_title():
+    greeters, leaders = role(member_ids=[ALICE]), role(member_ids=[ALICE, BOB])
+    info = {"name": "UK", "onboarders": [CAROL]}
+    assert onboarding.onboarder_title(info, [greeters, leaders], ALICE, AFTER) == "Chapter Greeter"
+    assert onboarding.onboarder_title(info, [greeters, leaders], BOB, AFTER) == "National Leader"
+    assert onboarding.onboarder_title(info, [None, None], CAROL, BEFORE) == "onboarder"
+    assert onboarding.onboarder_title(info, [None, None], CAROL, AFTER) is None
+    assert onboarding.onboarder_title(info, [greeters, leaders], NEWBIE, BEFORE) is None
+
+
+def tier_msg(added, *infos, now=AFTER):
+    return onboarding.tier_role_message(added, infos, "<@dani>", now)
+
+
+def test_becoming_a_greeter_is_announced_for_held_country():
+    assert tier_msg(["Chapter Greeter"], SPAIN) == "<@dani> has become a Chapter Greeter for Spain"
+    assert tier_msg(["National Leader"], SPAIN, now=BEFORE) == "<@dani> has become a National Leader for Spain"
+
+
+def test_tier_announcement_names_every_held_country():
+    assert tier_msg(["Chapter Greeter"], SPAIN, UK, US) == (
+        "<@dani> has become a Chapter Greeter for Spain, UK and US")
+
+
+def test_both_tier_roles_at_once_get_a_line_each():
+    assert tier_msg(["National Leader", "Chapter Greeter"], SPAIN) == (
+        "<@dani> has become a Chapter Greeter for Spain\n"
+        "<@dani> has become a National Leader for Spain")
+
+
+def test_tier_announcement_leaves_out_no_ping_countries():
+    france = main.COUNTRY_DATA[FRANCE_ID]
+    assert tier_msg(["Chapter Greeter"], france, SPAIN) == "<@dani> has become a Chapter Greeter for Spain"
+    assert tier_msg(["Chapter Greeter"], france) is None
+    # France still pings before the switch
+    assert tier_msg(["Chapter Greeter"], france, now=BEFORE) == "<@dani> has become a Chapter Greeter for France"
+
+
+def test_no_tier_announcement_without_country_or_tier_role():
+    assert tier_msg(["Chapter Greeter"]) is None
+    assert tier_msg([], SPAIN) is None

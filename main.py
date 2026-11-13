@@ -417,15 +417,32 @@ async def on_member_update(before, after):
     # Check if any new roles were added
     new_roles = [role for role in after.roles if role not in before.roles]
     added_country_roles = [role for role in new_roles if role.id in COUNTRY_DATA]
-    
+    added_tier_names = [role.name for role in new_roles if role.name in onboarding.TIER_ROLE_NAMES]
+
+    if not added_country_roles and not added_tier_names:
+        return
+
+    channel = bot.get_channel(int(ONBOARDING_PIPELINE_CHANNEL_ID)) if ONBOARDING_PIPELINE_CHANNEL_ID else None
+    # Read the clock once, so every post in this update agrees about the switch
+    now = datetime.datetime.now(datetime.UTC)
+
+    # Became a Chapter Greeter / National Leader: announce it for every country role they hold,
+    # including any gained in this same update (their own "joined" post is then skipped)
+    if added_tier_names and channel:
+        held_countries = [COUNTRY_DATA[r.id] for r in after.roles if r.id in COUNTRY_DATA]
+        tier_msg = onboarding.tier_role_message(added_tier_names, held_countries, after.mention, now)
+        if tier_msg:
+            try:
+                await channel.send(tier_msg)
+            except discord.HTTPException as e:
+                print(f"Error posting tier role post for {after.name}: {e}")
+
     if not added_country_roles:
         return
 
     # Will track if we need to set the notification flag
     onboarding_notification = False
-    
-    channel = bot.get_channel(int(ONBOARDING_PIPELINE_CHANNEL_ID)) if ONBOARDING_PIPELINE_CHANNEL_ID else None
-    
+
     # By name, so test servers' own roles work and a role created after startup is found
     tier_roles = [discord.utils.get(after.guild.roles, name=name) for name in onboarding.TIER_ROLE_NAMES]
 
@@ -434,7 +451,8 @@ async def on_member_update(before, after):
         
         # 1. Ping Staff in Onboarding Channel (skipped for noPing countries)
         if channel:
-            ping_msg, onboarder_ids = onboarding.onboarding_ping(info, role, tier_roles, after.id, after.mention)
+            ping_msg, onboarder_ids = onboarding.onboarding_ping(
+                info, role, tier_roles, after.id, after.mention, now=now, added_tier_names=added_tier_names)
             if ping_msg:
                 # A failed post shouldn't stop the email and the record update below
                 try:
