@@ -197,11 +197,16 @@ async def test_save_member_creates_then_updates(pool):
 
 async def test_leaving_saves_roles_and_rejoining_clears_left_at(pool):
     await save(pool)
-    await db.mark_left(pool, 1, NOW, [10, 11, 13], ["UK", "Volunteer", "Wants to volunteer"])
+    await db.mark_left(pool, 1, "ann", NOW, [10, 11, 13], ["UK", "Volunteer", "Wants to volunteer"])
     row = await pool.fetchrow("SELECT left_at, role_ids FROM discord_members WHERE id = 1")
     assert row["left_at"] == NOW and row["role_ids"] == [10, 11, 13]
     await save(pool)
     assert await pool.fetchval("SELECT left_at FROM discord_members WHERE id = 1") is None
+
+
+async def test_leaving_before_the_first_save_still_saves_roles(pool):
+    await db.mark_left(pool, 2, "bob", NOW, [10], ["UK"])
+    assert await db.saved_roles(pool, 2) == ([10], ["UK"])
 
 
 async def test_onboarding_notification_only_turns_on(pool):

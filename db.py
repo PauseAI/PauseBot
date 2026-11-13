@@ -154,11 +154,15 @@ async def save_member(pool, *, member_id, username, nick, global_name, joined_at
     )
 
 
-async def mark_left(pool, member_id, left_at, role_ids, role_names):
+async def mark_left(pool, member_id, username, left_at, role_ids, role_names):
     """Records a leave and the roles held at that moment, so they can be given back on rejoin."""
     await pool.execute(
-        "UPDATE discord_members SET left_at = $2, role_ids = $3, role_names = $4 WHERE id = $1",
-        member_id, left_at, list(role_ids), list(role_names),
+        """
+        INSERT INTO discord_members (id, username, left_at, role_ids, role_names) VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (id) DO UPDATE SET left_at = EXCLUDED.left_at, role_ids = EXCLUDED.role_ids,
+            role_names = EXCLUDED.role_names
+        """,
+        member_id, username, left_at, list(role_ids), list(role_names),
     )
 
 

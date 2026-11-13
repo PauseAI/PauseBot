@@ -278,7 +278,11 @@ async def daily_civicrm_link_sweep():
     before signing up. Runs on startup too."""
     if not CIVICRM_URL or not CIVICRM_API_KEY:
         return
-    linked = await db.linked_member_ids(db_pool)
+    try:
+        linked = await db.linked_member_ids(db_pool)
+    except Exception as e:
+        print(f"Error reading linked members, skipping today's CiviCRM link sweep: {e}")
+        return
     for guild in bot.guilds:
         if not is_active_guild(guild.id):
             continue
@@ -469,7 +473,7 @@ async def on_member_remove(member):
     # Saving the roles they had means any granted since the last sync come back if they rejoin
     role_ids, role_names = role_lists(member.roles)
     try:
-        await db.mark_left(db_pool, member.id, datetime.datetime.now(datetime.UTC), role_ids, role_names)
+        await db.mark_left(db_pool, member.id, member.name, datetime.datetime.now(datetime.UTC), role_ids, role_names)
     except Exception as e:
         print(f"Error marking {member.name} as left: {e}")
 
