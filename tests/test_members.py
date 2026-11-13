@@ -1,4 +1,5 @@
 import datetime
+import json
 from types import SimpleNamespace as NS
 import aiohttp
 import pytest
@@ -113,5 +114,46 @@ async def test_link_raises_when_civicrm_does_not_answer(response):
         async with aiohttp.ClientSession() as session:
             with pytest.raises(civicrm.LinkError):
                 await civicrm.link(session, str(server.make_url("/")), "key", 1, "ann")
+    finally:
+        await server.close()
+
+
+async def test_link_many_sends_every_pair_and_returns_a_row_each():
+    seen = {}
+
+    async def handler(request):
+        seen["params"] = json.loads((await request.post())["params"])
+        return web.json_response({"values": [
+            {"discord_user_id": "1240361207010164817", "status": "ok"},
+            {"discord_user_id": "2", "status": "refused", "reason": "no_match"},
+        ]})
+
+    app = web.Application()
+    app.router.add_post("/civicrm/ajax/api4/PauseaiDiscordMember/linkMany", handler)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            answers = await civicrm.link_many(session, str(server.make_url("/")), "key",
+                                              [(1240361207010164817, "ann"), (2, "bob")])
+    finally:
+        await server.close()
+    assert seen["params"] == {"members": [{"discord_user_id": "1240361207010164817", "username": "ann"},
+                                          {"discord_user_id": "2", "username": "bob"}]}
+    assert [a["status"] for a in answers] == ["ok", "refused"]
+
+
+async def test_link_many_raises_when_an_answer_is_missing():
+    async def handler(request):
+        return web.json_response({"values": [{"discord_user_id": "1", "status": "ok"}]})
+
+    app = web.Application()
+    app.router.add_post("/civicrm/ajax/api4/PauseaiDiscordMember/linkMany", handler)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            with pytest.raises(civicrm.LinkError):
+                await civicrm.link_many(session, str(server.make_url("/")), "key", [(1, "ann"), (2, "bob")])
     finally:
         await server.close()
