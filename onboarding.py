@@ -14,7 +14,7 @@ CHAPTER_GREETER_ROLE_NAME = "Chapter Greeter"
 NATIONAL_LEADER_ROLE_NAME = "National Leader"
 TIER_ROLE_NAMES = (CHAPTER_GREETER_ROLE_NAME, NATIONAL_LEADER_ROLE_NAME)
 
-# Granted (at Airtable's request) once someone has done /join: verified email, signed the
+# Granted (at CiviCRM's request) once someone has done /join: verified email, signed the
 # Volunteer Agreement and linked Discord. Not "Wants to help", which is only an onboarding answer.
 JOINED_ROLE_NAME = "Wants to volunteer"
 

@@ -1,12 +1,13 @@
 # PauseBot
 
-PauseBot is a Discord bot designed to streamline the onboarding pipeline for PauseAI. It listens for new members joining the server and, once they are assigned specific country roles, automatically sends an email to the corresponding country coordinator using the MailerSend API. It also automatically records new joining users to an Airtable database. It reports its email activities to a designated Discord channel.
+PauseBot is a Discord bot designed to streamline the onboarding pipeline for PauseAI. It listens for new members joining the server and, once they are assigned specific country roles, automatically sends an email to the corresponding country coordinator using the MailerSend API. It also records each member in its Postgres database and links them to their member record in CiviCRM. It reports its email activities to a designated Discord channel.
 
 ## Features
 
 - **Automatic Onboarding Emails**: Monitors new users and waits a few minutes. If a user is given a registered country role, an email is automatically sent to the country's coordinator.
-- **Airtable Integration**: Records new member details (Discord ID, username, nick, global name, join date, and role IDs) to an Airtable table.
-- **Airtable/Webhook to Discord Syncing**: Exposes a secure REST endpoint (`/webhook/add_role`) natively powered by a web server that accepts POST requests securely authenticated with a `WEBHOOK_SECRET`. Allows Airtable automations to seamlessly assign Discord roles to members based on Airtable state updates.
+- **Member Records**: Keeps each member's details (Discord ID, username, nick, global name, join and leave dates, and roles) in Postgres. When someone rejoins, the roles they had are given back (except any that `is_role_safe_to_grant` refuses).
+- **CiviCRM Linking**: Asks CiviCRM to link each member to their member record by Discord username, on join and in a daily sweep (also run at startup) of everyone in the server not linked yet.
+- **Webhook to Discord Syncing**: Exposes a secure REST endpoint (`/webhook/add_role`) that accepts POST requests authenticated with a `WEBHOOK_SECRET`. CiviCRM calls it to give the volunteer role to linked members once they're verified and have signed the Volunteer Agreement.
 - **Member Export**: Administrators and authorized users can use the `!export_members` command to download a CSV file containing all members and their roles.
 - **Discord Notification Channel**: Logs successful and failed email attempts directly to a designated Discord channel (e.g., `#onboarding-pipeline`).
 - **Role-based Logic**: Easily map new or existing Discord Role IDs to specific email addresses.
@@ -19,8 +20,8 @@ PauseBot is a Discord bot designed to streamline the onboarding pipeline for Pau
 - Python 3.8+
 - A Discord Bot Token
 - A MailerSend API Key
-- An Airtable Personal Access Token (optional, if you want an Airtable log)
-- A PostgreSQL database (optional, for server snapshots and the message log)
+- A PostgreSQL database
+- A CiviCRM API key for the bot's account (optional; without it, members aren't linked to CiviCRM)
 
 ## Setup
 
@@ -54,14 +55,12 @@ PauseBot is a Discord bot designed to streamline the onboarding pipeline for Pau
    Edit `.env` and configure the following variables:
    - `DISCORD_TOKEN`: Your Discord bot token.
    - `MAILERSEND_API_KEY`: Your MailerSend API Key.
-   - `AIRTABLE_PERSONAL_ACCESS_TOKEN`: The PAT from your Airtable account.
+   - `CIVICRM_URL`, `CIVICRM_API_KEY`: CiviCRM's address and the bot's API key, for linking members.
    - `WEBHOOK_SECRET`: A secret string of your choosing. Required if using the webhooks for assigning roles.
    - `PORT`: (Optional) Custom port for the web server to run over (defaults to 8080).
-   - `DATABASE_URL`: (Optional) Postgres connection string for snapshots and the message log. The bot creates its tables on startup.
+   - `DATABASE_URL`: Postgres connection string. The bot creates its tables on startup, and won't start without the database.
 
 5. **Configure Roles and Channels (in `main.py`):**
-   - Update `AIRTABLE_BASE_ID` with your target Airtable base's ID.
-   - Update `AIRTABLE_TABLE_NAME` with the table name where members will be recorded.
    - Update `ONBOARDING_PIPELINE_CHANNEL_ID` with the channel ID where the bot should log its actions.
    - Update the `COUNTRY_ROLES` dictionary with the Discord Role IDs and their corresponding coordinator email addresses.
 
@@ -87,6 +86,10 @@ TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/pausebot_test py
 This bot is designed to be easily deployed to containerized environments or platforms like Railway or Heroku. Make sure to define your environment variables (`DISCORD_TOKEN`, `MAILERSEND_API_KEY`, etc.) in your deployment platform's dashboard.
 
 The message log needs the **Message Content** privileged intent, enabled under Bot in the Discord Developer Portal.
+
+### Moving the member records off Airtable
+
+`jobs/copy_airtable_members.py` copies Airtable's Discord table into the `discord_members` table, once. Stop the bot, run it with `DATABASE_URL` and `AIRTABLE_PERSONAL_ACCESS_TOKEN` set, then start the bot. Running it again overwrites each copied row with Airtable's.
 
 ### Database backups
 

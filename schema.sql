@@ -33,3 +33,20 @@ CREATE TABLE IF NOT EXISTS message_edits (
     edited_at timestamptz NOT NULL
 );
 CREATE INDEX IF NOT EXISTS message_edits_message_id ON message_edits (message_id);
+
+-- One row per Discord user the bot has seen (moved from Airtable's Discord table). Kept after they
+-- leave, so their roles can be given back if they rejoin.
+CREATE TABLE IF NOT EXISTS discord_members (
+    id bigint PRIMARY KEY,
+    username text NOT NULL,
+    nick text,
+    global_name text,
+    joined_at timestamptz,
+    left_at timestamptz,
+    role_ids bigint[] NOT NULL DEFAULT '{}',
+    role_names text[] NOT NULL DEFAULT '{}',
+    onboarding_notification boolean NOT NULL DEFAULT false,
+    discord_reaction boolean NOT NULL DEFAULT false,
+    -- When CiviCRM linked this Discord user to a member; the daily sweep retries everyone without one
+    civicrm_linked_at timestamptz
+);

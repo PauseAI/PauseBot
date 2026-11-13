@@ -2,6 +2,7 @@ import datetime
 import asyncpg
 import pytest
 import db
+from jobs import copy_airtable_members
 
 NOW = datetime.datetime.now(datetime.UTC)
 GUILD = 1100491867675709580
@@ -24,7 +25,7 @@ async def test_schema_is_idempotent(pool):
     tables = await pool.fetch(
         "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"
     )
-    assert [t["tablename"] for t in tables] == ["message_edits", "message_log", "server_snapshots"]
+    assert [t["tablename"] for t in tables] == ["discord_members", "message_edits", "message_log", "server_snapshots"]
 
 
 async def test_discord_ids_fit_in_bigint(pool):
@@ -173,3 +174,82 @@ async def test_latest_snapshot_time(pool):
     await db.save_snapshot(pool, GUILD, {"n": 1})
     latest = await db.latest_snapshot(pool, GUILD)
     assert await db.latest_snapshot_time(pool, GUILD) == latest["taken_at"]
+
+
+# ── Discord members ───────────────────────────────────────────────────────────
+
+async def save(pool, member_id=1, **overrides):
+    fields = dict(member_id=member_id, username="ann", nick=None, global_name="Ann", joined_at=NOW,
+                  role_ids=[10, 11], role_names=["UK", "Volunteer"])
+    fields.update(overrides)
+    await db.save_member(pool, **fields)
+
+
+async def test_save_member_creates_then_updates(pool):
+    assert await db.saved_roles(pool, 1) is None
+    await save(pool)
+    await save(pool, username="ann2", role_ids=[12], role_names=["Germany"])
+    row = await pool.fetchrow("SELECT * FROM discord_members WHERE id = 1")
+    assert row["username"] == "ann2"
+    assert await db.saved_roles(pool, 1) == ([12], ["Germany"])
+
+
+async def test_leaving_saves_roles_and_rejoining_clears_left_at(pool):
+    await save(pool)
+    await db.mark_left(pool, 1, "ann", NOW, [10, 11, 13], ["UK", "Volunteer", "Wants to volunteer"])
+    row = await pool.fetchrow("SELECT left_at, role_ids FROM discord_members WHERE id = 1")
+    assert row["left_at"] == NOW and row["role_ids"] == [10, 11, 13]
+    await save(pool)
+    assert await pool.fetchval("SELECT left_at FROM discord_members WHERE id = 1") is None
+
+
+async def test_leaving_again_before_a_sync_keeps_the_saved_roles(pool):
+    await save(pool)
+    await db.mark_left(pool, 1, "ann", NOW, [10, 13], ["UK", "Wants to volunteer"])
+    await db.mark_left(pool, 1, "ann", NOW, [], [])
+    assert await db.saved_roles(pool, 1) == ([10, 13], ["UK", "Wants to volunteer"])
+
+
+async def test_leaving_before_the_first_save_still_saves_roles(pool):
+    await db.mark_left(pool, 2, "bob", NOW, [10], ["UK"])
+    assert await db.saved_roles(pool, 2) == ([10], ["UK"])
+
+
+async def test_onboarding_notification_only_turns_on(pool):
+    await save(pool, onboarding_notification=True)
+    await save(pool)
+    assert await pool.fetchval("SELECT onboarding_notification FROM discord_members WHERE id = 1") is True
+
+
+async def test_set_flag_updates_only_existing_records(pool):
+    await save(pool, 1)
+    await save(pool, 2)
+    assert await db.set_flag(pool, "discord_reaction", [1, 3]) == 1
+    flags = await pool.fetch("SELECT id, discord_reaction FROM discord_members ORDER BY id")
+    assert [(r["id"], r["discord_reaction"]) for r in flags] == [(1, True), (2, False)]
+
+
+async def test_set_flag_refuses_other_columns(pool):
+    with pytest.raises(ValueError):
+        await db.set_flag(pool, "username", [1])
+
+
+async def test_linking_survives_resaves(pool):
+    await save(pool, 1)
+    await save(pool, 2)
+    await db.mark_linked(pool, 1, "ann")
+    # A member the bot has no record of yet still gets one
+    await db.mark_linked(pool, 3, "cat")
+    await save(pool, 1)
+    assert await db.linked_member_ids(pool) == {1, 3}
+
+
+async def test_copy_from_airtable_keeps_the_link(pool):
+    row = copy_airtable_members.from_airtable({"id": "1", "username": "ann", "role_ids": ["10"], "role_names": ["UK"],
+                                 "discord_reaction": True})
+    await copy_airtable_members.copy_row(pool, row)
+    await db.mark_linked(pool, 1, "ann")
+    await copy_airtable_members.copy_row(pool, row)
+    copied = await pool.fetchrow("SELECT * FROM discord_members WHERE id = 1")
+    assert copied["role_ids"] == [10] and copied["discord_reaction"] is True
+    assert copied["civicrm_linked_at"] is not None

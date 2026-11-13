@@ -25,7 +25,7 @@ def dsn():
 @pytest.fixture
 async def pool(dsn):
     pool = await db.create_pool(dsn)
-    await pool.execute("DROP TABLE IF EXISTS message_edits, message_log, server_snapshots CASCADE")
+    await pool.execute("DROP TABLE IF EXISTS discord_members, message_edits, message_log, server_snapshots CASCADE")
     await db.apply_schema(pool)
     yield pool
     await pool.close()

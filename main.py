@@ -1,5 +1,4 @@
 import os
-import urllib.parse
 import datetime
 import discord
 import aiohttp
@@ -14,15 +13,18 @@ from aiohttp import web
 import db
 from snapshot import take_snapshot
 import onboarding
+import civicrm
+import members
 # Load environment variables from .env file
 load_dotenv()
 
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 MAILERSEND_API_KEY = os.getenv('MAILERSEND_API_KEY')
-AIRTABLE_PERSONAL_ACCESS_TOKEN = os.getenv('AIRTABLE_PERSONAL_ACCESS_TOKEN')
 WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')
 PORT = int(os.getenv('PORT', 8080))
 DATABASE_URL = os.getenv('DATABASE_URL')
+CIVICRM_URL = os.getenv('CIVICRM_URL')
+CIVICRM_API_KEY = os.getenv('CIVICRM_API_KEY')
 
 ALLOWED_EXPORT_ROLE_ID = 1409324452545822793
 
@@ -35,8 +37,6 @@ YAGPDB_USER_ID = 204255221017214977
 last_yagpdb_alert_time = None
 
 ONBOARDING_PIPELINE_CHANNEL_ID = 1174807044990193775
-AIRTABLE_BASE_ID = "appWPTGqZmUcs3NWu"
-AIRTABLE_TABLE_ID = "tblxeqggeTWU7Y8ME"
 # Left out of GENERAL_DM for members who've already joined (see onboarding.has_joined)
 GENERAL_DM_JOIN_PARAGRAPH = "If you’re looking for an immediate action to take, join up at [pauseai.info/join](https://pauseai.info/join)."
 GENERAL_DM = """Welcome to the PauseAI Global Discord, {user}!
@@ -93,12 +93,12 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 # Shared aiohttp session — created once on startup, reused for all HTTP calls
 http_session: aiohttp.ClientSession | None = None
 
-# Postgres pool for server snapshots and the message log; stays None if DATABASE_URL is unset or unreachable
+# Postgres pool for server snapshots, the message log and member records; set up before any event is handled
 db_pool = None
 
 # Permissions a role must NOT have for the bot to grant/re-grant it automatically
-# (via the webhook, or via Airtable-driven role restoration), so a leaked
-# WEBHOOK_SECRET or a stale/tampered Airtable field can't be used to escalate.
+# (via the webhook, or by restoring saved roles), so a leaked
+# WEBHOOK_SECRET or a stale/tampered saved role can't be used to escalate.
 DANGEROUS_ROLE_PERMISSIONS = (
     "administrator", "manage_guild", "manage_roles", "manage_channels",
     "manage_webhooks", "manage_messages", "kick_members", "ban_members",
@@ -143,6 +143,7 @@ async def handle_webhook(request):
             try:
                 member = await guild.fetch_member(int(user_id))
             except discord.NotFound:
+                # CiviCRM matches this exact text to retry later rather than log an error: keep it as is
                 return web.json_response({"error": "Member not found in guild"}, status=404)
             
         role = guild.get_role(int(role_id))
@@ -180,19 +181,11 @@ async def setup_hook():
     global http_session, db_pool
     http_session = aiohttp.ClientSession()
     bot.loop.create_task(start_web_server())
-    if DATABASE_URL:
-        # A database outage shouldn't take onboarding down with it, so carry on without one
-        pool = None
-        try:
-            pool = await db.create_pool(DATABASE_URL)
-            await db.apply_schema(pool)
-            db_pool = pool
-            daily_snapshot_and_prune.start()
-        except Exception as e:
-            db_pool = None
-            if pool:
-                await pool.close()
-            print(f"Database unavailable, running without snapshots or message log: {e}")
+    # Member records live in the database, so the bot doesn't start without it
+    db_pool = await db.create_pool(DATABASE_URL)
+    await db.apply_schema(db_pool)
+    daily_snapshot_and_prune.start()
+    daily_civicrm_link_sweep.start()
     await bot.tree.sync()
 
 bot.setup_hook = setup_hook
@@ -229,234 +222,82 @@ async def before_daily_snapshot():
     await bot.wait_until_ready()
 
 
-async def find_airtable_record(discord_id):
-    if not AIRTABLE_PERSONAL_ACCESS_TOKEN:
-        return None, None
+def role_lists(roles):
+    """(role_ids, role_names) of a member's roles, leaving out @everyone."""
+    roles = [r for r in roles if not r.is_default()]
+    return [r.id for r in roles], [r.name for r in roles]
 
-    if not str(discord_id).isdigit():
-        print(f"Refusing to query Airtable with non-numeric discord_id: {discord_id!r}")
-        return None, None
-
-    formula = f"{{id}}='{discord_id}'"
-    encoded_formula = urllib.parse.quote(formula)
-    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}?filterByFormula={encoded_formula}"
-    headers = {
-        "Authorization": f"Bearer {AIRTABLE_PERSONAL_ACCESS_TOKEN}"
-    }
-    
-    try:
-        async with http_session.get(url, headers=headers) as response:
-            if response.status == 200:
-                data = await response.json()
-                records = data.get("records", [])
-                if records:
-                    return records[0].get("id"), records[0].get("fields", {})
-    except Exception as e:
-        print(f"Error checking Airtable for {discord_id}: {e}")
-        
-    return None, None
-
-
-async def update_airtable_fields(discord_id: str, fields_to_update: dict):
-    if not AIRTABLE_PERSONAL_ACCESS_TOKEN:
-        return
-        
-    record_id, _ = await find_airtable_record(discord_id)
-    if record_id:
-        url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}/{record_id}"
-        headers = {
-            "Authorization": f"Bearer {AIRTABLE_PERSONAL_ACCESS_TOKEN}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "fields": fields_to_update,
-            "typecast": True
-        }
-        try:
-            async with http_session.patch(url, headers=headers, json=payload) as response:
-                if response.status == 200:
-                    print(f"Successfully updated fields {list(fields_to_update.keys())} for {discord_id} in Airtable!")
-                else:
-                    text = await response.text()
-                    print(f"Error updating fields {list(fields_to_update.keys())} for {discord_id}: {response.status} - {text}")
-        except Exception as e:
-            print(f"Exception updating fields {list(fields_to_update.keys())} for {discord_id}: {e}")
-
-async def get_airtable_discord_id_mapping():
-    """Fetches all records from Airtable and maps discord ID (string) to Airtable record ID."""
-    if not AIRTABLE_PERSONAL_ACCESS_TOKEN:
-        return {}
-        
-    mapping = {}
-    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}"
-    headers = {
-        "Authorization": f"Bearer {AIRTABLE_PERSONAL_ACCESS_TOKEN}"
-    }
-    
-    offset = None
-    while True:
-        params = {"fields[]": "id"}
-        if offset:
-            params["offset"] = offset
-            
-        try:
-            async with http_session.get(url, headers=headers, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    for record in data.get("records", []):
-                        discord_id_val = record.get("fields", {}).get("id")
-                        if discord_id_val:
-                            mapping[str(discord_id_val)] = record["id"]
-                            
-                    offset = data.get("offset")
-                    if not offset:
-                        break
-                else:
-                    break
-        except Exception as e:
-            print(f"Error fetching Airtable records: {e}")
-            break
-            
-    return mapping
-
-async def batch_update_airtable_fields(updates_list):
-    """
-    updates_list should be a list of dicts: [{"id": record_id, "fields": {...}}, ...]
-    Airtable supports up to 10 records per PATCH request.
-    """
-    if not AIRTABLE_PERSONAL_ACCESS_TOKEN or not updates_list:
-        return
-        
-    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}"
-    headers = {
-        "Authorization": f"Bearer {AIRTABLE_PERSONAL_ACCESS_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    
-    # Chunk into batches of 10 maximum (Airtable limit)
-    chunks = [updates_list[i:i + 10] for i in range(0, len(updates_list), 10)]
-    for chunk in chunks:
-        payload = {
-            "records": chunk,
-            "typecast": True
-        }
-        try:
-            async with http_session.patch(url, headers=headers, json=payload) as response:
-                if response.status != 200:
-                    text = await response.text()
-                    print(f"Error in batch update: {response.status} - {text}")
-        except Exception as e:
-            print(f"Exception in batch update: {e}")
-        await asyncio.sleep(0.2) # Sleep slightly between chunk requests to respect API rate limits
-
-async def sync_member_to_airtable(member, extra_fields=None):
-    if not AIRTABLE_PERSONAL_ACCESS_TOKEN:
-        return
-
-    record_id, fields = await find_airtable_record(str(member.id))
-    
-    joined_at_str = member.joined_at.isoformat() if member.joined_at else ""
-    role_ids = [str(role.id) for role in member.roles if role.name != "@everyone"]
-    role_names = [role.name for role in member.roles if role.name != "@everyone"]
-
-    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}"
-    headers = {
-        "Authorization": f"Bearer {AIRTABLE_PERSONAL_ACCESS_TOKEN}",
-        "Content-Type": "application/json"
-    }
-
-    if record_id:
-        roles_to_assign = []
-        saved_role_ids = fields.get("role_ids", "")
-        saved_role_names = fields.get("role_names", "")
-        
-        if isinstance(saved_role_ids, str):
-            saved_ids_list = [r.strip() for r in saved_role_ids.split(",") if r.strip()]
-        else:
-            saved_ids_list = saved_role_ids or []
-            
-        if isinstance(saved_role_names, str):
-            saved_names_list = [r.strip() for r in saved_role_names.split(",") if r.strip()]
-        else:
-            saved_names_list = saved_role_names or []
-
-        for r_id in saved_ids_list:
-            if r_id.isdigit():
-                role = member.guild.get_role(int(r_id))
-                if role and role not in roles_to_assign:
-                    roles_to_assign.append(role)
-                    
-        for r_name in saved_names_list:
-            if not any(r.name == r_name for r in roles_to_assign):
-                role = discord.utils.get(member.guild.roles, name=r_name)
-                if role and role not in roles_to_assign:
-                    roles_to_assign.append(role)
-        
-        roles_to_assign = [r for r in roles_to_assign if is_role_safe_to_grant(r)]
-
-        if roles_to_assign:
+async def sync_member_record(member, onboarding_notification=False):
+    """Saves the member's record, first giving back any saved roles they don't have (e.g. after
+    leaving and rejoining) that are safe to grant."""
+    saved = await db.saved_roles(db_pool, member.id)
+    roles = list(member.roles)
+    if saved:
+        to_restore = [r for r in members.roles_to_restore(member.guild, *saved)
+                      if r not in roles and is_role_safe_to_grant(r)]
+        if to_restore:
             try:
-                await member.add_roles(*roles_to_assign)
-                print(f"Restored {len(roles_to_assign)} roles for returning user {member.name}.")
-                all_current_roles = list(set(member.roles) | set(roles_to_assign))
-                role_ids = [str(r.id) for r in all_current_roles if r.name != "@everyone"]
-                role_names = [r.name for r in all_current_roles if r.name != "@everyone"]
+                await member.add_roles(*to_restore)
+                print(f"Restored {len(to_restore)} roles for returning user {member.name}.")
+                roles += to_restore
             except Exception as e:
                 print(f"Error restoring roles for {member.name}: {e}")
 
-        patch_url = f"{url}/{record_id}"
-        payload = {
-            "fields": {
-                "username": member.name,
-                "nick": member.nick or "",
-                "global_name": getattr(member, 'global_name', member.name) or "",
-                "joined_at": joined_at_str,
-                "role_ids": role_ids,
-                "role_names": role_names,
-                "left_at": None,
-                **(extra_fields or {})
-            },
-            "typecast": True
-        }
-        
-        try:
-            async with http_session.patch(patch_url, headers=headers, json=payload) as response:
-                if response.status == 200:
-                    print(f"Successfully updated returning user {member.name} in Airtable!")
-                else:
-                    text = await response.text()
-                    print(f"Error updating user {member.name}: {response.status} - {text}")
-        except Exception as e:
-            print(f"Exception updating user {member.name}: {e}")
+    role_ids, role_names = role_lists(roles)
+    await db.save_member(
+        db_pool,
+        member_id=member.id,
+        username=member.name,
+        nick=member.nick,
+        global_name=getattr(member, 'global_name', member.name),
+        joined_at=member.joined_at,
+        role_ids=role_ids,
+        role_names=role_names,
+        onboarding_notification=onboarding_notification,
+    )
 
-    else:
-        payload = {
-            "records": [
-                {
-                    "fields": {
-                        "id": str(member.id),
-                        "username": member.name,
-                        "nick": member.nick or "",
-                        "global_name": getattr(member, 'global_name', member.name) or "",
-                        "joined_at": joined_at_str,
-                        "role_ids": role_ids,
-                        "role_names": role_names,
-                        "left_at": None,
-                        **(extra_fields or {})
-                    }
-                }
-            ],
-            "typecast": True
-        }
-        try:
-            async with http_session.post(url, headers=headers, json=payload) as response:
-                if response.status in (200, 201):
-                    print(f"Successfully posted new user {member.name} to Airtable!")
-                else:
-                    text = await response.text()
-                    print(f"Error posting user {member.name}: {response.status} - {text}")
-        except Exception as e:
-            print(f"Exception posting user {member.name}: {e}")
+async def link_to_civicrm(member):
+    """Asks CiviCRM to link the member to their member record. Returns CiviCRM's refusal reason, or None
+    once linked. A refusal (no member gave this username yet, or more than one did) is retried by the
+    next daily sweep. Raises civicrm.LinkError when CiviCRM doesn't answer."""
+    answer = await civicrm.link(http_session, CIVICRM_URL, CIVICRM_API_KEY, member.id, member.name)
+    if answer["status"] != "ok":
+        return answer.get("reason") or "refused"
+    await db.mark_linked(db_pool, member.id, member.name)
+    print(f"CiviCRM linked {member.name}.")
+    return None
+
+@tasks.loop(hours=24)
+async def daily_civicrm_link_sweep():
+    """Links everyone in the server CiviCRM hasn't linked yet, such as members who joined Discord
+    before signing up. Runs on startup too."""
+    if not CIVICRM_URL or not CIVICRM_API_KEY:
+        return
+    try:
+        linked = await db.linked_member_ids(db_pool)
+    except Exception as e:
+        print(f"Error reading linked members, skipping today's CiviCRM link sweep: {e}")
+        return
+    for guild in bot.guilds:
+        if not is_active_guild(guild.id):
+            continue
+        unlinked = [m for m in guild.members if not m.bot and m.id not in linked]
+        print(f"Asking CiviCRM to link {len(unlinked)} member(s) of {guild.name}...")
+        newly_linked = 0
+        for member in unlinked:
+            try:
+                newly_linked += await link_to_civicrm(member) is None
+            except civicrm.LinkError as e:
+                # Every other call would fail the same way: try again tomorrow
+                print(f"Stopping the CiviCRM link sweep, CiviCRM didn't answer: {e}")
+                break
+            except Exception as e:
+                print(f"Error linking {member.name}: {e}")
+        print(f"CiviCRM linked {newly_linked} of them.")
+
+@daily_civicrm_link_sweep.before_loop
+async def before_daily_civicrm_link_sweep():
+    await bot.wait_until_ready()
 
 @bot.event
 async def on_ready():
@@ -495,7 +336,7 @@ async def startup_sync_recent_members():
         for member in guild.members:
             if member.joined_at and (now - member.joined_at) <= delta:
                 try:
-                    await sync_member_to_airtable(member)
+                    await sync_member_record(member)
                     synced_count += 1
                     await asyncio.sleep(0.5)
                 except Exception as e:
@@ -504,13 +345,20 @@ async def startup_sync_recent_members():
         print(f"Startup check complete for {guild.name}: Auto-synced {synced_count} recent members.")
 
 async def _handle_member_join(member):
-    """Background task: syncs the new member immediately to Airtable."""
+    """Background task: saves the new member's record and asks CiviCRM to link them."""
     await asyncio.sleep(5) # Small delay to ensure they are fully joined
     guild = member.guild
     member = guild.get_member(member.id)
     if not member:
         return
-    await sync_member_to_airtable(member)
+    try:
+        await sync_member_record(member)
+        if CIVICRM_URL and CIVICRM_API_KEY:
+            reason = await link_to_civicrm(member)
+            if reason:
+                print(f"CiviCRM did not link {member.name}: {reason}")
+    except Exception as e:
+        print(f"Error saving or linking new member {member.name}: {e}")
 
 async def send_delayed_welcome_dm(member):
     """Wait temporarily after joining/screening to give the user time to settle, then send a DM."""
@@ -541,7 +389,7 @@ async def on_member_join(member):
         print(f"PROD MODE: Ignored {member.name} joining test/dev server.")
         return
 
-    print(f"User {member.name} joined! Preparing initial Airtable sync...")
+    print(f"User {member.name} joined! Saving their record...")
     asyncio.create_task(_handle_member_join(member))
 
     # If they are NOT pending (meaning no Rules Screening), send Welcome DM on a timer
@@ -581,7 +429,7 @@ async def on_member_update(before, after):
         if channel:
             ping_msg, onboarder_ids = onboarding.onboarding_ping(info, role, tier_roles, after.id, after.mention)
             if ping_msg:
-                # A failed post shouldn't stop the email and Airtable sync below
+                # A failed post shouldn't stop the email and the record update below
                 try:
                     await channel.send(ping_msg)
                     if onboarder_ids:
@@ -615,9 +463,8 @@ async def on_member_update(before, after):
             except Exception as e:
                 print(f"Error sending email to {target_email}: {e}")
 
-    print(f"User {after.name} received country role(s)! Updating Airtable and notifying coordinators.")
-    extra_fields = {"onboarding_notification": True} if onboarding_notification else None
-    await sync_member_to_airtable(after, extra_fields=extra_fields)
+    print(f"User {after.name} received country role(s)! Updating their record and notifying coordinators.")
+    await sync_member_record(after, onboarding_notification=onboarding_notification)
 
 @bot.event
 async def on_member_remove(member):
@@ -627,36 +474,13 @@ async def on_member_remove(member):
         return
         
     print(f"User {member.name} left the server!")
-    
-    if not AIRTABLE_PERSONAL_ACCESS_TOKEN:
-        return
-        
-    record_id, _ = await find_airtable_record(str(member.id))
-    if record_id:
-        url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}/{record_id}"
-        headers = {
-            "Authorization": f"Bearer {AIRTABLE_PERSONAL_ACCESS_TOKEN}",
-            "Content-Type": "application/json"
-        }
-        
-        left_at_str = datetime.datetime.now(datetime.UTC).isoformat()
 
-        payload = {
-            "fields": {
-                "left_at": left_at_str
-            },
-            "typecast": True
-        }
-
-        try:
-            async with http_session.patch(url, headers=headers, json=payload) as response:
-                if response.status == 200:
-                    print(f"Successfully marked {member.name} as left in Airtable!")
-                else:
-                    text = await response.text()
-                    print(f"Error marking {member.name} as left: {response.status} - {text}")
-        except Exception as e:
-            print(f"Exception marking {member.name} as left: {e}")
+    # Saving the roles they had means any granted since the last sync come back if they rejoin
+    role_ids, role_names = role_lists(member.roles)
+    try:
+        await db.mark_left(db_pool, member.id, member.name, datetime.datetime.now(datetime.UTC), role_ids, role_names)
+    except Exception as e:
+        print(f"Error marking {member.name} as left: {e}")
 
 @bot.tree.command(name='export_members', description="Generates a CSV export of all members.")
 async def export_members(interaction: discord.Interaction):
@@ -703,7 +527,7 @@ async def export_members(interaction: discord.Interaction):
     file = discord.File(fp=csv_buffer, filename="members_export.csv")
     await interaction.followup.send(content="✅ Here is the export of all members:", file=file, ephemeral=True)
 
-@bot.tree.command(name='sync_member', description="Syncs a specific member to Airtable.")
+@bot.tree.command(name='sync_member', description="Syncs a specific member to the database.")
 @app_commands.describe(member="The Discord member to sync")
 async def sync_member(interaction: discord.Interaction, member: discord.Member):
     if not interaction.guild:
@@ -726,8 +550,8 @@ async def sync_member(interaction: discord.Interaction, member: discord.Member):
 
     await interaction.response.defer()
     try:
-        await sync_member_to_airtable(member)
-        await interaction.followup.send(content=f"✅ Successfully synced {member.name} to Airtable!")
+        await sync_member_record(member)
+        await interaction.followup.send(content=f"✅ Successfully synced {member.name}!")
     except Exception as e:
         await interaction.followup.send(content=f"❌ Failed to sync {member.name}: {e}")
 
@@ -761,15 +585,15 @@ async def sync_recent_cmd(interaction: discord.Interaction, minutes: float = 60.
     for m in interaction.guild.members:
         if m.joined_at and (now - m.joined_at) <= delta:
             try:
-                await sync_member_to_airtable(m)
+                await sync_member_record(m)
                 synced_count += 1
                 await asyncio.sleep(0.5)
             except Exception as e:
                 print(f"Error syncing {m.name} in sync_recent: {e}")
                 
-    await interaction.followup.send(content=f"✅ Finished! Synced {synced_count} recent members to Airtable.")
+    await interaction.followup.send(content=f"✅ Finished! Synced {synced_count} recent members.")
 
-@bot.tree.command(name='sync_old_notifications', description="Retroactively updates Airtable for old onboarding notifications")
+@bot.tree.command(name='sync_old_notifications', description="Retroactively records old onboarding notifications")
 @app_commands.describe(limit="Number of past messages to scan (default 200)")
 async def sync_old_notifications_cmd(interaction: discord.Interaction, limit: int = 200):
     if not interaction.guild:
@@ -799,49 +623,23 @@ async def sync_old_notifications_cmd(interaction: discord.Interaction, limit: in
         
     await interaction.followup.send(content="⏳ Scanning channel history... please wait.")    
         
-    updates_needed = {}
+    notified, reacted = set(), set()
     async for message in channel.history(limit=limit):
         if message.author.id != bot.user.id:
             continue
-            
         match = re.search(r'<@!?(\d+)>\s+has joined from', message.content)
         if match:
-            joined_user_id = match.group(1)
-            
-            extra_fields = {"onboarding_notification": True}
-            
-            # Check if there's any reactions
-            if len(message.reactions) > 0:
-                extra_fields["discord_reaction"] = True
-                
-            if joined_user_id not in updates_needed:
-                updates_needed[joined_user_id] = extra_fields
-            else:
-                updates_needed[joined_user_id].update(extra_fields)
-                
-    if not updates_needed:
+            notified.add(int(match.group(1)))
+            if message.reactions:
+                reacted.add(int(match.group(1)))
+
+    if not notified:
         await interaction.followup.send(content="✅ Found 0 records that needed updates.")
         return
-        
-    await interaction.followup.send(content=f"🔍 Found {len(updates_needed)} users needing updates. Fetching Airtable IDs...")
-    
-    mapping = await get_airtable_discord_id_mapping()
-    
-    batch_payload = []
-    for discord_id, fields in updates_needed.items():
-        record_id = mapping.get(discord_id)
-        if record_id:
-            batch_payload.append({
-                "id": record_id,
-                "fields": fields
-            })
-            
-    if batch_payload:
-        await interaction.followup.send(content=f"🚀 Sending {len(batch_payload)} records to Airtable using batch updates...")
-        await batch_update_airtable_fields(batch_payload)
-        await interaction.followup.send(content=f"✅ Finished retroactively updating {len(batch_payload)} Airtable records!")
-    else:
-        await interaction.followup.send(content="❌ None of the found users had records in Airtable.")
+
+    updated = await db.set_flag(db_pool, "onboarding_notification", notified)
+    await db.set_flag(db_pool, "discord_reaction", reacted)
+    await interaction.followup.send(content=f"✅ Finished! Updated {updated} of the {len(notified)} users' records.")
 
 @bot.event
 async def on_raw_reaction_add(payload):
@@ -875,8 +673,8 @@ async def on_raw_reaction_add(payload):
     match = re.search(r'<@!?(\d+)>\s+has joined from', message.content)
     if match:
         joined_user_id = match.group(1)
-        print(f"Reaction added to notification for user {joined_user_id}. Updating Airtable.")
-        await update_airtable_fields(joined_user_id, {"discord_reaction": True})
+        print(f"Reaction added to notification for user {joined_user_id}. Updating their record.")
+        await db.set_flag(db_pool, "discord_reaction", [int(joined_user_id)])
 
 @bot.event
 async def on_message(message):
@@ -892,7 +690,7 @@ async def on_message(message):
 
     # Replaces Quark: keep every server message for 30 days. Runs in the background so a slow
     # database never holds up the moderator ping or commands below.
-    if db_pool and message.guild:
+    if message.guild:
         task = asyncio.create_task(log_message_safely(message))
         background_tasks.add(task)
         task.add_done_callback(background_tasks.discard)
@@ -957,7 +755,7 @@ def message_fields_from_raw(data):
 # Raw events fire even for messages that aren't in discord.py's message cache
 @bot.event
 async def on_raw_message_edit(payload):
-    if not db_pool or not is_active_guild(payload.guild_id):
+    if not is_active_guild(payload.guild_id):
         return
     # Edits that only add embeds arrive without content
     if "content" not in payload.data:
@@ -979,7 +777,7 @@ async def on_raw_message_edit(payload):
 
 @bot.event
 async def on_raw_message_delete(payload):
-    if not db_pool or not is_active_guild(payload.guild_id):
+    if not is_active_guild(payload.guild_id):
         return
     try:
         await db.log_delete(db_pool, [payload.message_id], datetime.datetime.now(datetime.UTC))
@@ -988,7 +786,7 @@ async def on_raw_message_delete(payload):
 
 @bot.event
 async def on_raw_bulk_message_delete(payload):
-    if not db_pool or not is_active_guild(payload.guild_id):
+    if not is_active_guild(payload.guild_id):
         return
     try:
         await db.log_delete(db_pool, payload.message_ids, datetime.datetime.now(datetime.UTC))
@@ -996,13 +794,11 @@ async def on_raw_bulk_message_delete(payload):
         print(f"Error logging bulk deletion in channel {payload.channel_id}: {e}")
 
 if __name__ == "__main__":
-    if not DISCORD_TOKEN or not MAILERSEND_API_KEY:
-        print("Error: DISCORD_TOKEN or MAILERSEND_API_KEY is not set in the environment.")
+    if not DISCORD_TOKEN or not MAILERSEND_API_KEY or not DATABASE_URL:
+        print("Error: DISCORD_TOKEN, MAILERSEND_API_KEY or DATABASE_URL is not set in the environment.")
     else:
-        if not AIRTABLE_PERSONAL_ACCESS_TOKEN:
-            print("Warning: Airtable variables are not fully set. The bot will skip posting to Airtable.")
         if not ONBOARDING_PIPELINE_CHANNEL_ID:
             print("Warning: ONBOARDING_PIPELINE_CHANNEL_ID is not set. The bot will not send messages in Discord.")
-        if not DATABASE_URL:
-            print("Warning: DATABASE_URL is not set. The bot will skip server snapshots and the message log.")
+        if not CIVICRM_URL or not CIVICRM_API_KEY:
+            print("Warning: CIVICRM_URL or CIVICRM_API_KEY is not set. The bot will not link members to CiviCRM.")
         bot.run(DISCORD_TOKEN)

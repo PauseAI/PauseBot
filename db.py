@@ -1,4 +1,5 @@
-"""Postgres storage for server snapshots and the message log (replacing Xenon and Quark)."""
+"""Postgres storage for server snapshots and the message log (replacing Xenon and Quark), and the
+Discord member records (replacing Airtable's Discord table)."""
 import json
 import pathlib
 import asyncpg
@@ -120,6 +121,76 @@ async def get_edits(pool, message_id):
     return await pool.fetch(
         "SELECT content_before, edited_at FROM message_edits WHERE message_id = $1 ORDER BY edited_at, id",
         message_id,
+    )
+
+
+# ── Discord members ───────────────────────────────────────────────────────────
+
+# The flags set_flag may set; the column name is put into the SQL, so it must come from this list
+MEMBER_FLAGS = ("onboarding_notification", "discord_reaction")
+
+
+async def saved_roles(pool, member_id):
+    """The (role_ids, role_names) last saved for a member, or None if there's no record of them."""
+    row = await pool.fetchrow("SELECT role_ids, role_names FROM discord_members WHERE id = $1", member_id)
+    return (row["role_ids"], row["role_names"]) if row else None
+
+
+async def save_member(pool, *, member_id, username, nick, global_name, joined_at, role_ids, role_names,
+                      onboarding_notification=False):
+    """Creates or updates a member's record, clearing left_at. onboarding_notification only ever
+    turns the flag on."""
+    await pool.execute(
+        """
+        INSERT INTO discord_members (id, username, nick, global_name, joined_at, role_ids, role_names, onboarding_notification)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (id) DO UPDATE SET
+            username = EXCLUDED.username, nick = EXCLUDED.nick, global_name = EXCLUDED.global_name,
+            joined_at = EXCLUDED.joined_at, role_ids = EXCLUDED.role_ids, role_names = EXCLUDED.role_names,
+            left_at = NULL,
+            onboarding_notification = discord_members.onboarding_notification OR EXCLUDED.onboarding_notification
+        """,
+        member_id, username, nick, global_name, joined_at, list(role_ids), list(role_names), onboarding_notification,
+    )
+
+
+async def mark_left(pool, member_id, username, left_at, role_ids, role_names):
+    """Records a leave and the roles held at that moment, so they can be given back on rejoin."""
+    await pool.execute(
+        """
+        INSERT INTO discord_members (id, username, left_at, role_ids, role_names) VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (id) DO UPDATE SET left_at = EXCLUDED.left_at,
+            -- A member who rejoins and leaves again before their record is synced keeps the roles saved before
+            role_ids = CASE WHEN discord_members.left_at IS NULL THEN EXCLUDED.role_ids ELSE discord_members.role_ids END,
+            role_names = CASE WHEN discord_members.left_at IS NULL THEN EXCLUDED.role_names ELSE discord_members.role_names END
+        """,
+        member_id, username, left_at, list(role_ids), list(role_names),
+    )
+
+
+async def set_flag(pool, flag, member_ids):
+    """Turns one of MEMBER_FLAGS on for the given members. Returns how many records were updated."""
+    if flag not in MEMBER_FLAGS:
+        raise ValueError(f"Not a member flag: {flag!r}")
+    result = await pool.execute(
+        f"UPDATE discord_members SET {flag} = true WHERE id = ANY($1::bigint[])", list(member_ids)
+    )
+    return int(result.split()[-1])
+
+
+async def linked_member_ids(pool):
+    """IDs of the members CiviCRM has linked."""
+    rows = await pool.fetch("SELECT id FROM discord_members WHERE civicrm_linked_at IS NOT NULL")
+    return {row["id"] for row in rows}
+
+
+async def mark_linked(pool, member_id, username):
+    await pool.execute(
+        """
+        INSERT INTO discord_members (id, username, civicrm_linked_at) VALUES ($1, $2, now())
+        ON CONFLICT (id) DO UPDATE SET civicrm_linked_at = now()
+        """,
+        member_id, username,
     )
 
 
