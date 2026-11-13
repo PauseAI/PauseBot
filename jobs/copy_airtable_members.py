@@ -6,6 +6,7 @@ Applies the schema first. Safe to run again: each record overwrites the row with
 civicrm_linked_at is left alone.
 """
 import asyncio
+import datetime
 import os
 import sys
 from pathlib import Path
@@ -14,10 +15,39 @@ import aiohttp
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # So running this file directly can import db
 
 import db  # noqa: E402
-import members  # noqa: E402
 
 AIRTABLE_BASE_ID = "appWPTGqZmUcs3NWu"
 AIRTABLE_TABLE_ID = "tblxeqggeTWU7Y8ME"
+
+
+def _list(value):
+    """A list from Airtable, which sends these fields as a list or as one comma-separated string."""
+    if isinstance(value, str):
+        return [v.strip() for v in value.split(",") if v.strip()]
+    return [str(v).strip() for v in value or [] if str(v).strip()]
+
+
+def _time(value):
+    return datetime.datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
+
+
+def from_airtable(fields):
+    """The save fields of a record from Airtable's Discord table, or None if it has no Discord ID."""
+    member_id = str(fields.get("id") or "").strip()
+    if not member_id.isdigit():
+        return None
+    return {
+        "id": int(member_id),
+        "username": fields.get("username") or "",
+        "nick": fields.get("nick") or None,
+        "global_name": fields.get("global_name") or None,
+        "joined_at": _time(fields.get("joined_at")),
+        "left_at": _time(fields.get("left_at")),
+        "role_ids": [int(r) for r in _list(fields.get("role_ids")) if r.isdigit()],
+        "role_names": _list(fields.get("role_names")),
+        "onboarding_notification": bool(fields.get("onboarding_notification")),
+        "discord_reaction": bool(fields.get("discord_reaction")),
+    }
 
 
 async def airtable_records(session, token):
@@ -64,7 +94,7 @@ async def main():
         copied = skipped = 0
         async with aiohttp.ClientSession() as session:
             async for fields in airtable_records(session, token):
-                row = members.from_airtable(fields)
+                row = from_airtable(fields)
                 if row is None:
                     skipped += 1
                     continue

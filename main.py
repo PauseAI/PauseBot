@@ -143,6 +143,7 @@ async def handle_webhook(request):
             try:
                 member = await guild.fetch_member(int(user_id))
             except discord.NotFound:
+                # CiviCRM matches this exact text to retry later rather than log an error: keep it as is
                 return web.json_response({"error": "Member not found in guild"}, status=404)
             
         role = guild.get_role(int(role_id))
@@ -618,32 +619,20 @@ async def sync_old_notifications_cmd(interaction: discord.Interaction, limit: in
         
     await interaction.followup.send(content="⏳ Scanning channel history... please wait.")    
         
-    updates_needed = {}
+    notified, reacted = set(), set()
     async for message in channel.history(limit=limit):
         if message.author.id != bot.user.id:
             continue
-            
         match = re.search(r'<@!?(\d+)>\s+has joined from', message.content)
         if match:
-            joined_user_id = match.group(1)
-            
-            extra_fields = {"onboarding_notification": True}
-            
-            # Check if there's any reactions
-            if len(message.reactions) > 0:
-                extra_fields["discord_reaction"] = True
-                
-            if joined_user_id not in updates_needed:
-                updates_needed[joined_user_id] = extra_fields
-            else:
-                updates_needed[joined_user_id].update(extra_fields)
-                
-    if not updates_needed:
+            notified.add(int(match.group(1)))
+            if message.reactions:
+                reacted.add(int(match.group(1)))
+
+    if not notified:
         await interaction.followup.send(content="✅ Found 0 records that needed updates.")
         return
-        
-    notified = [int(uid) for uid in updates_needed]
-    reacted = [int(uid) for uid, fields in updates_needed.items() if fields.get("discord_reaction")]
+
     updated = await db.set_flag(db_pool, "onboarding_notification", notified)
     await db.set_flag(db_pool, "discord_reaction", reacted)
     await interaction.followup.send(content=f"✅ Finished! Updated {updated} of the {len(notified)} users' records.")

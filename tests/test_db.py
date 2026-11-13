@@ -2,7 +2,6 @@ import datetime
 import asyncpg
 import pytest
 import db
-import members
 from jobs import copy_airtable_members
 
 NOW = datetime.datetime.now(datetime.UTC)
@@ -239,7 +238,7 @@ async def test_linking_survives_resaves(pool):
 
 
 async def test_copy_from_airtable_keeps_the_link(pool):
-    row = members.from_airtable({"id": "1", "username": "ann", "role_ids": ["10"], "role_names": ["UK"],
+    row = copy_airtable_members.from_airtable({"id": "1", "username": "ann", "role_ids": ["10"], "role_names": ["UK"],
                                  "discord_reaction": True})
     await copy_airtable_members.copy_row(pool, row)
     await db.mark_linked(pool, 1, "ann")

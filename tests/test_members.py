@@ -6,6 +6,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 import civicrm
 import members
+from jobs.copy_airtable_members import from_airtable
 
 
 def guild(*roles):
@@ -34,7 +35,7 @@ def test_a_role_matched_by_id_is_not_added_twice_by_name():
 # ── Copying from Airtable ─────────────────────────────────────────────────────
 
 def test_from_airtable_reads_lists():
-    row = members.from_airtable({
+    row = from_airtable({
         "id": "1240361207010164817", "username": "ann", "joined_at": "2024-05-01T10:00:00.000Z",
         "role_ids": ["10", "11"], "role_names": ["UK", "Wants to volunteer"], "onboarding_notification": True,
     })
@@ -47,13 +48,13 @@ def test_from_airtable_reads_lists():
 
 
 def test_from_airtable_reads_comma_separated_strings():
-    row = members.from_airtable({"id": "1", "username": "ann", "role_ids": "10, 11", "role_names": "UK, Volunteer"})
+    row = from_airtable({"id": "1", "username": "ann", "role_ids": "10, 11", "role_names": "UK, Volunteer"})
     assert row["role_ids"] == [10, 11] and row["role_names"] == ["UK", "Volunteer"]
 
 
 def test_from_airtable_skips_records_without_an_id():
-    assert members.from_airtable({"username": "ann"}) is None
-    assert members.from_airtable({"id": "abc"}) is None
+    assert from_airtable({"username": "ann"}) is None
+    assert from_airtable({"id": "abc"}) is None
 
 
 # ── CiviCRM link ──────────────────────────────────────────────────────────────
