@@ -185,7 +185,7 @@ async def setup_hook():
     db_pool = await db.create_pool(DATABASE_URL)
     await db.apply_schema(db_pool)
     daily_snapshot_and_prune.start()
-    daily_civicrm_link_sweep.start()
+    civicrm_link_sweep.start()
     await bot.tree.sync()
 
 bot.setup_hook = setup_hook
@@ -259,7 +259,7 @@ async def sync_member_record(member, onboarding_notification=False):
 async def link_to_civicrm(member):
     """Asks CiviCRM to link the member to their member record. Returns CiviCRM's refusal reason, or None
     once linked. A refusal (no member gave this username yet, or more than one did) is retried by the
-    next daily sweep. Raises civicrm.LinkError when CiviCRM doesn't answer."""
+    next hourly sweep. Raises civicrm.LinkError when CiviCRM doesn't answer."""
     answer = await civicrm.link(http_session, CIVICRM_URL, CIVICRM_API_KEY, member.id, member.name)
     if answer["status"] != "ok":
         return answer.get("reason") or "refused"
@@ -267,8 +267,8 @@ async def link_to_civicrm(member):
     print(f"CiviCRM linked {member.name}.")
     return None
 
-@tasks.loop(hours=24)
-async def daily_civicrm_link_sweep():
+@tasks.loop(hours=1)
+async def civicrm_link_sweep():
     """Links everyone in the server CiviCRM hasn't linked yet, such as members who joined Discord
     before signing up. Runs on startup too."""
     if not CIVICRM_URL or not CIVICRM_API_KEY:
@@ -276,7 +276,7 @@ async def daily_civicrm_link_sweep():
     try:
         linked = await db.linked_member_ids(db_pool)
     except Exception as e:
-        print(f"Error reading linked members, skipping today's CiviCRM link sweep: {e}")
+        print(f"Error reading linked members, skipping this CiviCRM link sweep: {e}")
         return
     for guild in bot.guilds:
         if not is_active_guild(guild.id):
@@ -284,19 +284,26 @@ async def daily_civicrm_link_sweep():
         unlinked = [m for m in guild.members if not m.bot and m.id not in linked]
         print(f"Asking CiviCRM to link {len(unlinked)} member(s) of {guild.name}...")
         newly_linked = 0
-        for member in unlinked:
+        for start in range(0, len(unlinked), civicrm.BATCH_SIZE):
+            batch = unlinked[start:start + civicrm.BATCH_SIZE]
             try:
-                newly_linked += await link_to_civicrm(member) is None
+                answers = await civicrm.link_many(http_session, CIVICRM_URL, CIVICRM_API_KEY,
+                                                  [(m.id, m.name) for m in batch])
             except civicrm.LinkError as e:
-                # Every other call would fail the same way: try again tomorrow
+                # Every other batch would fail the same way: try again next hour
                 print(f"Stopping the CiviCRM link sweep, CiviCRM didn't answer: {e}")
                 break
-            except Exception as e:
-                print(f"Error linking {member.name}: {e}")
+            for member, answer in zip(batch, answers):
+                if answer["status"] == "ok":
+                    try:
+                        await db.mark_linked(db_pool, member.id, member.name)
+                        newly_linked += 1
+                    except Exception as e:
+                        print(f"Error recording {member.name} as linked: {e}")
         print(f"CiviCRM linked {newly_linked} of them.")
 
-@daily_civicrm_link_sweep.before_loop
-async def before_daily_civicrm_link_sweep():
+@civicrm_link_sweep.before_loop
+async def before_civicrm_link_sweep():
     await bot.wait_until_ready()
 
 @bot.event

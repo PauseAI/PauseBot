@@ -6,7 +6,7 @@ PauseBot is a Discord bot designed to streamline the onboarding pipeline for Pau
 
 - **Automatic Onboarding Emails**: Monitors new users and waits a few minutes. If a user is given a registered country role, an email is automatically sent to the country's coordinator.
 - **Member Records**: Keeps each member's details (Discord ID, username, nick, global name, join and leave dates, and roles) in Postgres. When someone rejoins, the roles they had are given back (except any that `is_role_safe_to_grant` refuses).
-- **CiviCRM Linking**: Asks CiviCRM to link each member to their member record by Discord username, on join and in a daily sweep (also run at startup) of everyone in the server not linked yet.
+- **CiviCRM Linking**: Asks CiviCRM to link each member to their member record by Discord username, on join, and in an hourly sweep (also run at startup) that sends everyone in the server not linked yet in batches of 500.
 - **Webhook to Discord Syncing**: Exposes a secure REST endpoint (`/webhook/add_role`) that accepts POST requests authenticated with a `WEBHOOK_SECRET`. CiviCRM calls it to give the volunteer role to linked members once they're verified and have signed the Volunteer Agreement.
 - **Member Export**: Administrators and authorized users can use the `!export_members` command to download a CSV file containing all members and their roles.
 - **Discord Notification Channel**: Logs successful and failed email attempts directly to a designated Discord channel (e.g., `#onboarding-pipeline`).
