@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 from types import SimpleNamespace as NS
 import main
@@ -474,3 +475,19 @@ def test_new_member_gets_no_dm_on_role_gain():
 
 def test_onboarder_adding_own_country_gets_no_dm():
     assert added_dms(main.COUNTRY_DATA[FRANCE_ID], tiers=(role(member_ids=[NEWBIE]), None)) == []
+
+
+async def test_member_awaiting_welcome_counts_as_new_until_it_has_run(monkeypatch):
+    # Passing rules screening days after joining is still a join: the delayed welcome sends the DMs
+    ran = []
+
+    async def fake_send(member):
+        ran.append(member.id)
+
+    monkeypatch.setattr(main, "_send_delayed_welcome_dm", fake_send)
+    main.schedule_welcome_dm(NS(id=NEWBIE))
+    assert NEWBIE in main.awaiting_welcome  # before the task has had a chance to run
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert ran == [NEWBIE]
+    assert NEWBIE not in main.awaiting_welcome

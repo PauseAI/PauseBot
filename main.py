@@ -367,8 +367,26 @@ async def _handle_member_join(member):
     except Exception as e:
         print(f"Error saving or linking new member {member.name}: {e}")
 
+# Members with a delayed welcome DM scheduled or still running: they're new, however long ago
+# they joined (say, passing rules screening days later), and their country DMs come with it
+awaiting_welcome = set()
+
+
+def schedule_welcome_dm(member):
+    # Marked before the task starts, so the same update's role handling already sees it
+    awaiting_welcome.add(member.id)
+    asyncio.create_task(send_delayed_welcome_dm(member))
+
+
 async def send_delayed_welcome_dm(member):
     """Wait temporarily after joining/screening to give the user time to settle, then send a DM."""
+    try:
+        await _send_delayed_welcome_dm(member)
+    finally:
+        awaiting_welcome.discard(member.id)
+
+
+async def _send_delayed_welcome_dm(member):
     await asyncio.sleep(180) # Wait 3 minutes
 
     guild = member.guild
@@ -401,7 +419,7 @@ async def on_member_join(member):
 
     # If they are NOT pending (meaning no Rules Screening), send Welcome DM on a timer
     if not getattr(member, 'pending', False):
-        asyncio.create_task(send_delayed_welcome_dm(member))
+        schedule_welcome_dm(member)
 
 @bot.event
 async def on_member_update(before, after):
@@ -412,7 +430,7 @@ async def on_member_update(before, after):
 
     # User just passed rules screening! Send delayed DM.
     if getattr(before, 'pending', False) and not getattr(after, 'pending', False):
-        asyncio.create_task(send_delayed_welcome_dm(after))
+        schedule_welcome_dm(after)
 
     # Check if any new roles were added
     new_roles = [role for role in after.roles if role not in before.roles]
@@ -425,6 +443,8 @@ async def on_member_update(before, after):
     channel = bot.get_channel(int(ONBOARDING_PIPELINE_CHANNEL_ID)) if ONBOARDING_PIPELINE_CHANNEL_ID else None
     # Read the clock once, so every post in this update agrees about the switch
     now = datetime.datetime.now(datetime.UTC)
+    # None (counted as a new member) while their delayed welcome is still to come
+    joined_at = None if after.id in awaiting_welcome else after.joined_at
 
     # Became a Chapter Greeter / National Leader: announce it for every country role they hold,
     # including any gained in this same update (their own "joined" post is then skipped, but only
@@ -456,7 +476,7 @@ async def on_member_update(before, after):
         if channel:
             ping_msg, onboarder_ids = onboarding.onboarding_ping(
                 info, role, tier_roles, after.id, after.mention, now=now,
-                added_tier_names=announced_tier_names, joined_at=after.joined_at)
+                added_tier_names=announced_tier_names, joined_at=joined_at)
             if ping_msg:
                 # A failed post shouldn't stop the email and the record update below
                 try:
@@ -495,7 +515,7 @@ async def on_member_update(before, after):
     # An existing member adding a country gets that country's own welcome now (new members get
     # theirs, with the general welcome, from send_delayed_welcome_dm)
     added_infos = [COUNTRY_DATA[role.id] for role in added_country_roles]
-    for dm in onboarding.added_country_dms(added_infos, tier_roles, after.id, after.name, after.joined_at, now):
+    for dm in onboarding.added_country_dms(added_infos, tier_roles, after.id, after.name, joined_at, now):
         try:
             await after.send(dm)
         except discord.Forbidden:
