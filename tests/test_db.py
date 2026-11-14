@@ -262,7 +262,7 @@ def utc(year, month, day=1, hour=0):
 
 
 async def test_discord_member_stats_counts_by_utc_month_and_current_members(pool):
-    # Two current members in Jan (one just before midnight UTC, which is Feb in UTC+1)
+    # Two current members in Jan
     await save(pool, 1, joined_at=utc(2026, 1, 31, 23), role_ids=[10, 11], onboarding_notification=True)
     await save(pool, 2, joined_at=utc(2026, 1, 5), role_ids=[10])
     # Joined Jan, left Mar: counted in its join and leave months, not in the current totals
@@ -292,7 +292,9 @@ async def test_discord_member_stats_months_are_utc_whatever_the_session_timezone
     await save(pool, 1, joined_at=utc(2026, 1, 31, 23))
     await db.mark_left(pool, 1, "ann", utc(2026, 3, 31, 23), [], [])
     # UTC+14, where both times fall in the next month
-    kiritimati = await asyncpg.create_pool(dsn, server_settings={"timezone": "Pacific/Kiritimati"})
+    kiritimati = await asyncpg.create_pool(
+        dsn, min_size=1, max_size=1, server_settings={"timezone": "Pacific/Kiritimati"}
+    )
     try:
         stats = await db.discord_member_stats(kiritimati)
     finally:

@@ -41,9 +41,11 @@ async def test_stats_refuse_a_header_that_is_not_utf8(client):
     reader, writer = await asyncio.open_connection(client.host, client.port)
     writer.write(b"GET /stats/discord HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer \xff\r\n"
                  b"Connection: close\r\n\r\n")
-    status_line = await reader.readline()
-    writer.close()
-    await writer.wait_closed()
+    try:
+        status_line = await reader.readline()
+    finally:
+        writer.close()
+        await writer.wait_closed()
     assert status_line.split()[1] == b"401"
 
 
