@@ -57,30 +57,27 @@ Welcome {user}! PauseAI France is run by Pause IA, which has its own Discord ser
 That's the place to get involved in France. You're still very welcome here too!"""
 
 # Unified definition for Countries (MailerSend Emails + YAGPDB Onboarder Pings)
-# "onboarders" lists only apply until onboarding.ROLE_ROUTING_FROM; after that, every country pings by role.
+# Every country pings its Chapter Greeters, or failing that its National Leaders (see onboarding.py)
 COUNTRY_DATA = {
-    1188719374941560925: {"name": "UK", "flag": "🇬🇧", "onboarders": [335365981276995594, 925051691798233089], "msg": "", "email": None},
-    1188717849980702781: {"name": "US", "flag": "🇺🇸", "onboarders": [732773275238793266], "msg": "", "email": None},
-    # France is run by Pause IA on its own Discord, so from onboarding.ROLE_ROUTING_FROM new members are
-    # pointed there instead of pinging anyone. Until then, beforeRoleRouting keeps its old behaviour.
-    1188719426552479824: {"name": "France", "flag": "🇫🇷", "onboarders": [], "msg": FRANCE_DM, "noPing": True, "email": None,
-                          "beforeRoleRouting": {"onboarders": [456868543225528331], "msg": "", "noPing": False}},
-    1188719399117541396: {"name": "Germany", "flag": "🇩🇪", "onboarders": [775477651703726092], "msg": "", "email": "germany@pauseai.info"},
-    1188719443954643035: {"name": "Netherlands", "flag": "🇳🇱", "onboarders": [1363472971141746718], "msg": "", "email": None},
-    1188719729662234624: {"name": "Italy", "flag": "🇮🇹", "onboarders": [1217966947057139762], "msg": "", "email": None},
-    1188720344882753566: {"name": "Spain", "flag": "🇪🇸", "onboarders": [758415679526797342], "msg": "", "email": None},
-    1250075465008549938: {"name": "Canada", "flag": "🇨🇦", "onboarders": [719546151593967616, 800445163520524311], "msg": "", "email": "canada@pauseai.info"},
-    1188719833555161089: {"name": "Nigeria", "flag": "🇳🇬", "onboarders": [1185890162027278446], "msg": "", "email": None},
-    1188720325530243142: {"name": "Romania", "flag": "🇷🇴", "onboarders": [521285222990348290], "msg": "", "email": None},
-    1188719500439343135: {"name": "Australia", "flag": "🇦🇺", "onboarders": [345795697792122891], "msg": "", "email": None},
-    1188719860096712756: {"name": "Poland", "flag": "🇵🇱", "onboarders": [1405864336873881644], "msg": "", "email": None},
-    1429216643459842129: {"name": "Serbia", "flag": "🇷🇸", "onboarders": [1060642083347632182], "msg": "", "email": None},
-    1188719899401523330: {"name": "Sweden", "flag": "🇸🇪", "onboarders": [269204846572339211], "msg": "", "email": None},
-    1188719610384633918: {"name": "Czech", "flag": "🇨🇿", "onboarders": [971680888960208926], "msg": "", "email": None},
-    1256260218162122843: {"name": "Kenya", "flag": "🇰🇪", "onboarders": [853298855310000148], "msg": "", "email": None},
-    # No static list: pings members with this country role and Chapter Greeter, or failing that National Leader
-    1188719747282518130: {"name": "Israel", "flag": "🇮🇱", "onboarders": [], "msg": "", "email": None},
-    1188719975796584479: {"name": "South Korea", "flag": "🇰🇷", "onboarders": [], "msg": "", "email": None},
+    1188719374941560925: {"name": "UK", "flag": "🇬🇧", "msg": "", "email": None},
+    1188717849980702781: {"name": "US", "flag": "🇺🇸", "msg": "", "email": None},
+    # France is run by Pause IA on its own Discord, so new members are pointed there instead of pinging anyone
+    1188719426552479824: {"name": "France", "flag": "🇫🇷", "msg": FRANCE_DM, "noPing": True, "email": None},
+    1188719399117541396: {"name": "Germany", "flag": "🇩🇪", "msg": "", "email": "germany@pauseai.info"},
+    1188719443954643035: {"name": "Netherlands", "flag": "🇳🇱", "msg": "", "email": None},
+    1188719729662234624: {"name": "Italy", "flag": "🇮🇹", "msg": "", "email": None},
+    1188720344882753566: {"name": "Spain", "flag": "🇪🇸", "msg": "", "email": None},
+    1250075465008549938: {"name": "Canada", "flag": "🇨🇦", "msg": "", "email": "canada@pauseai.info"},
+    1188719833555161089: {"name": "Nigeria", "flag": "🇳🇬", "msg": "", "email": None},
+    1188720325530243142: {"name": "Romania", "flag": "🇷🇴", "msg": "", "email": None},
+    1188719500439343135: {"name": "Australia", "flag": "🇦🇺", "msg": "", "email": None},
+    1188719860096712756: {"name": "Poland", "flag": "🇵🇱", "msg": "", "email": None},
+    1429216643459842129: {"name": "Serbia", "flag": "🇷🇸", "msg": "", "email": None},
+    1188719899401523330: {"name": "Sweden", "flag": "🇸🇪", "msg": "", "email": None},
+    1188719610384633918: {"name": "Czech", "flag": "🇨🇿", "msg": "", "email": None},
+    1256260218162122843: {"name": "Kenya", "flag": "🇰🇪", "msg": "", "email": None},
+    1188719747282518130: {"name": "Israel", "flag": "🇮🇱", "msg": "", "email": None},
+    1188719975796584479: {"name": "South Korea", "flag": "🇰🇷", "msg": "", "email": None},
 }
 
 intents = discord.Intents.default()
@@ -309,8 +306,6 @@ async def before_civicrm_link_sweep():
 @bot.event
 async def on_ready():
     print(f'Ready! Logged in as {bot.user}')
-    routing_state = "active" if onboarding.role_routing_active() else "not active yet"
-    print(f"Onboarding role routing is {routing_state} (switches on at {onboarding.ROLE_ROUTING_FROM.isoformat()})")
     for guild in bot.guilds:
         if not is_active_guild(guild.id):
             continue
@@ -441,7 +436,7 @@ async def on_member_update(before, after):
         return
 
     channel = bot.get_channel(int(ONBOARDING_PIPELINE_CHANNEL_ID)) if ONBOARDING_PIPELINE_CHANNEL_ID else None
-    # Read the clock once, so every post in this update agrees about the switch
+    # Read the clock once, so every post in this update agrees on who counts as an existing member
     now = datetime.datetime.now(datetime.UTC)
     # None (counted as a new member) while their delayed welcome is still to come
     joined_at = None if after.id in awaiting_welcome else after.joined_at
@@ -452,7 +447,7 @@ async def on_member_update(before, after):
     announced_tier_names = []
     if added_tier_names and channel:
         held_countries = [COUNTRY_DATA[r.id] for r in after.roles if r.id in COUNTRY_DATA]
-        tier_msg = onboarding.tier_role_message(added_tier_names, held_countries, after.mention, now)
+        tier_msg = onboarding.tier_role_message(added_tier_names, held_countries, after.mention)
         if tier_msg:
             try:
                 await channel.send(tier_msg)

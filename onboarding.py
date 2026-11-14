@@ -1,14 +1,6 @@
 """Works out who to ping in #onboarding-pipeline when a member gets a country role."""
 import datetime
 
-# When role routing switches on: Fri 13 Nov 2026, 17:00 UK time (UTC in November).
-# Before it, a country's static "onboarders" list in COUNTRY_DATA wins whenever it's non-empty,
-# and a country's "beforeRoleRouting" values replace its own (so France keeps its old onboarder
-# and no Pause IA DM). From it, static lists are ignored: every country pings its Chapter Greeters,
-# then its National Leaders, and "beforeRoleRouting" no longer applies.
-# To postpone the switch, change this and redeploy.
-ROLE_ROUTING_FROM = datetime.datetime(2026, 11, 13, 17, 0, tzinfo=datetime.UTC)
-
 # Tried in this order: the first role with anyone in the country is the one pinged
 CHAPTER_GREETER_ROLE_NAME = "Chapter Greeter"
 NATIONAL_LEADER_ROLE_NAME = "National Leader"
@@ -26,12 +18,6 @@ JOINED_ROLE_NAME = "Wants to volunteer"
 EXISTING_MEMBER_AFTER = datetime.timedelta(days=1)
 
 
-def role_routing_active(now=None):
-    if now is None:
-        now = datetime.datetime.now(datetime.UTC)
-    return now >= ROLE_ROUTING_FROM
-
-
 def is_existing_member(joined_at, now=None):
     """Whether a member who joined the server at joined_at is an existing member rather than a
     new one (see EXISTING_MEMBER_AFTER). An unknown joined_at counts as new, as it always did."""
@@ -40,14 +26,6 @@ def is_existing_member(joined_at, now=None):
     if now is None:
         now = datetime.datetime.now(datetime.UTC)
     return now - joined_at > EXISTING_MEMBER_AFTER
-
-
-def country_settings(info, now=None):
-    """A COUNTRY_DATA entry as it applies at `now`: before the switch, its "beforeRoleRouting"
-    values replace its own."""
-    if role_routing_active(now):
-        return info
-    return {**info, **info.get("beforeRoleRouting", {})}
 
 
 def _without(ids, joining_member_id):
@@ -61,18 +39,13 @@ def _without(ids, joining_member_id):
     return result
 
 
-def resolve_onboarders(static_ids, country_role, tier_roles, joining_member_id):
+def resolve_onboarders(country_role, tier_roles, joining_member_id):
     """User IDs to ping for a member who just got country_role.
 
-    A country's static onboarders list wins when anyone is left on it once the joining
-    member is removed. Otherwise each role in tier_roles is tried in order (a None role, one
-    that doesn't exist yet, is skipped), and the first one with members who also hold
-    country_role is used. The joining member is never included, and each ID appears once,
-    in order.
+    Each role in tier_roles is tried in order (a None role, one that doesn't exist yet, is
+    skipped), and the first one with members who also hold country_role is used. The joining
+    member is never included, and each ID appears once, in order.
     """
-    ids = _without(static_ids or (), joining_member_id)
-    if ids:
-        return ids
     for tier_role in tier_roles:
         if tier_role is None:
             continue
@@ -87,21 +60,16 @@ def _holds(role, member_id):
     return role is not None and any(m.id == member_id for m in role.members)
 
 
-def onboarder_title(info, tier_roles, member_id, now=None):
-    """What makes this member an onboarder for this country (COUNTRY_DATA entry), if anything:
-    the name of the first tier role they hold ("Chapter Greeter", then "National Leader"), or
-    "onboarder" if they're on its static list while static lists apply. None if neither.
+def onboarder_title(tier_roles, member_id):
+    """What makes this member an onboarder for a country, if anything: the name of the first
+    tier role they hold ("Chapter Greeter", then "National Leader"). None if neither.
 
     tier_roles are the roles named in TIER_ROLE_NAMES, in that order (None if missing).
     Holding the country role is assumed: this is asked about a member who has it.
     """
-    if now is None:
-        now = datetime.datetime.now(datetime.UTC)
     for name, tier_role in zip(TIER_ROLE_NAMES, tier_roles):
         if _holds(tier_role, member_id):
             return name
-    if not role_routing_active(now) and member_id in country_settings(info, now).get("onboarders", []):
-        return "onboarder"
     return None
 
 
@@ -110,36 +78,30 @@ def onboarding_ping(info, country_role, tier_roles, joining_member_id, member_me
     """(message to post in #onboarding-pipeline, IDs it pings) for one country's COUNTRY_DATA entry.
 
     A country with "noPing" set posts nothing at all, not even the "nobody to ping" message,
-    so the message is None. Static onboarders lists only count before ROLE_ROUTING_FROM.
+    so the message is None.
 
     A member who is themselves an onboarder for the country (see onboarder_title) isn't a new
     member joining: the post just notes they picked up the role, and pings nobody. If only tier
     roles in added_tier_names (gained in the same update, and announced by tier_role_message)
     make them an onboarder, nothing is posted here.
 
-    Otherwise the country's onboarders are pinged, with the same routing for a new member and
-    for an existing one (see is_existing_member, from joined_at) adding a country: only the
-    wording differs.
+    Otherwise the country's Chapter Greeters, or failing that its National Leaders, are pinged
+    (see resolve_onboarders), with the same routing for a new member and for an existing one
+    (see is_existing_member, from joined_at) adding a country: only the wording differs.
     """
-    if now is None:
-        # Read the clock once, so every check agrees right at the switch
-        now = datetime.datetime.now(datetime.UTC)
-    routing = role_routing_active(now)
-    settings = country_settings(info, now)
-    if settings.get("noPing"):
+    if info.get("noPing"):
         return None, []
     # What made them an onboarder before this update: tier roles it added don't count
     held_before = [None if name in added_tier_names else r for name, r in zip(TIER_ROLE_NAMES, tier_roles)]
-    title = onboarder_title(info, held_before, joining_member_id, now)
-    if not title and onboarder_title(info, tier_roles, joining_member_id, now):
+    title = onboarder_title(held_before, joining_member_id)
+    if not title and onboarder_title(tier_roles, joining_member_id):
         return None, []
     if title:
-        return picked_up_message(member_mention, settings["name"], title), []
-    static_ids = None if routing else settings.get("onboarders")
-    ids = resolve_onboarders(static_ids, country_role, tier_roles, joining_member_id)
+        return picked_up_message(member_mention, info["name"], title), []
+    ids = resolve_onboarders(country_role, tier_roles, joining_member_id)
     if is_existing_member(joined_at, now):
-        return added_country_message(ids, member_mention, settings["name"], joined_at), ids
-    return onboarding_message(ids, member_mention, settings["name"]), ids
+        return added_country_message(ids, member_mention, info["name"], joined_at), ids
+    return onboarding_message(ids, member_mention, info["name"]), ids
 
 
 def added_country_message(onboarder_ids, member_mention, country_name, joined_at):
@@ -155,14 +117,12 @@ def picked_up_message(member_mention, country_name, title):
     return f"{member_mention} ({country_name} {title}) picked up the {country_name} role"
 
 
-def tier_role_message(added_tier_names, country_infos, member_mention, now=None):
+def tier_role_message(added_tier_names, country_infos, member_mention):
     """The post for a member who just gained tier roles (names from TIER_ROLE_NAMES), given the
     COUNTRY_DATA entries for every country role they hold: one line per tier role, naming those
     countries. noPing countries are left out, and None means nothing to post (no tier role
     gained, or no country left to name)."""
-    if now is None:
-        now = datetime.datetime.now(datetime.UTC)
-    names = [s["name"] for s in (country_settings(info, now) for info in country_infos) if not s.get("noPing")]
+    names = [info["name"] for info in country_infos if not info.get("noPing")]
     if not names:
         return None
     if len(names) > 1:
@@ -197,7 +157,7 @@ def has_joined(member):
     return joined_role is not None and any(r.id == joined_role.id for r in member.roles)
 
 
-def welcome_dms(country_infos, general_msg, user, now=None, skip_paragraph=None):
+def welcome_dms(country_infos, general_msg, user, skip_paragraph=None):
     """The welcome DMs to send a member who picked these countries (COUNTRY_DATA entries), in order.
 
     Always the general welcome first, then one DM per picked country that has its own "msg",
@@ -206,17 +166,15 @@ def welcome_dms(country_infos, general_msg, user, now=None, skip_paragraph=None)
     """
     if skip_paragraph:
         general_msg = general_msg.replace(skip_paragraph + "\n \n", "", 1)
-    return [general_msg.format(user=user), *country_dms(country_infos, user, now)]
+    return [general_msg.format(user=user), *country_dms(country_infos, user)]
 
 
-def country_dms(country_infos, user, now=None):
+def country_dms(country_infos, user):
     """One DM per country (COUNTRY_DATA entry) that has its own "msg", in order, each headed with
     that country's name and flag. On its own, this is what an existing member adding a country
     is sent: no general welcome."""
-    if now is None:
-        now = datetime.datetime.now(datetime.UTC)
-    settings = [country_settings(info, now) for info in country_infos]
-    return [f"{country_dm_prefix(s)}\n\n{s['msg'].format(user=user)}" for s in settings if s.get("msg")]
+    return [f"{country_dm_prefix(info)}\n\n{info['msg'].format(user=user)}"
+            for info in country_infos if info.get("msg")]
 
 
 def added_country_dms(country_infos, tier_roles, member_id, user, joined_at, now=None):
@@ -228,5 +186,5 @@ def added_country_dms(country_infos, tier_roles, member_id, user, joined_at, now
         now = datetime.datetime.now(datetime.UTC)
     if not is_existing_member(joined_at, now):
         return []
-    infos = [info for info in country_infos if not onboarder_title(info, tier_roles, member_id, now)]
-    return country_dms(infos, user, now)
+    infos = [info for info in country_infos if not onboarder_title(tier_roles, member_id)]
+    return country_dms(infos, user)
