@@ -21,6 +21,8 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 MAILERSEND_API_KEY = os.getenv('MAILERSEND_API_KEY')
 WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')
+# Lets the onboarding dashboard read /stats/discord; kept apart from WEBHOOK_SECRET, which can grant roles
+STATS_SECRET = os.getenv('STATS_SECRET')
 PORT = int(os.getenv('PORT', 8080))
 DATABASE_URL = os.getenv('DATABASE_URL')
 CIVICRM_URL = os.getenv('CIVICRM_URL')
@@ -109,13 +111,17 @@ def is_role_safe_to_grant(role):
         return False
     return not any(getattr(role.permissions, perm) for perm in DANGEROUS_ROLE_PERMISSIONS)
 
+def has_bearer(request, secret):
+    """Whether the request's Authorization header is `Bearer <secret>`, compared in constant time."""
+    # aiohttp keeps undecodable header bytes as surrogates, so encode them back rather than raise
+    sent = request.headers.get("Authorization", "").encode("utf-8", "surrogateescape")
+    return hmac.compare_digest(sent, f"Bearer {secret}".encode())
+
 async def handle_webhook(request):
-    auth_header = request.headers.get("Authorization")
     if not WEBHOOK_SECRET:
         return web.json_response({"error": "Webhook secret not configured in the bot"}, status=500)
 
-    expected_header = f"Bearer {WEBHOOK_SECRET}"
-    if not auth_header or not hmac.compare_digest(auth_header, expected_header):
+    if not has_bearer(request, WEBHOOK_SECRET):
         return web.json_response({"error": "Unauthorized"}, status=401)
 
     # This endpoint only ever targets the production guild, so refuse it entirely
@@ -159,16 +165,31 @@ async def handle_webhook(request):
         print(f"WEBHOOK ERROR: {e}")
         return web.json_response({"error": "Internal server error"}, status=500)
 
-async def start_web_server():
+async def handle_discord_stats(request):
+    """Aggregate member counts for the onboarding dashboard (see db.discord_member_stats)."""
+    if not STATS_SECRET:
+        return web.json_response({"error": "Stats secret not configured in the bot"}, status=500)
+    if not has_bearer(request, STATS_SECRET):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+    try:
+        return web.json_response(await db.discord_member_stats(db_pool))
+    except Exception as e:
+        print(f"STATS ERROR: {e}")
+        return web.json_response({"error": "Internal server error"}, status=500)
+
+def make_app():
     app = web.Application()
     app.router.add_post('/webhook/add_role', handle_webhook)
+    app.router.add_get('/stats/discord', handle_discord_stats)
     
     # Simple healthcheck for the deployment platform
     async def healthcheck(request):
         return web.json_response({"status": "ok", "bot_user": str(bot.user) if bot.user else "Starting..."})
     app.router.add_get('/', healthcheck)
-    
-    runner = web.AppRunner(app)
+    return app
+
+async def start_web_server():
+    runner = web.AppRunner(make_app())
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
