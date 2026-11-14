@@ -194,6 +194,53 @@ async def mark_linked(pool, member_id, username):
     )
 
 
+async def discord_member_stats(pool):
+    """Aggregate counts of the member records for the onboarding dashboard; never anything about
+    one person. A record without joined_at (e.g. a leave seen before any join) counts only in
+    records and skipped_no_join_date."""
+    current = "joined_at IS NOT NULL AND left_at IS NULL"
+    async with pool.acquire() as conn:
+        # One snapshot, so the series and totals agree
+        async with conn.transaction(isolation="repeatable_read", readonly=True):
+            joins = await conn.fetch(
+                """
+                SELECT to_char(joined_at AT TIME ZONE 'UTC', 'YYYY-MM') AS month, count(*) AS n
+                FROM discord_members WHERE joined_at IS NOT NULL GROUP BY 1 ORDER BY 1
+                """
+            )
+            lefts = await conn.fetch(
+                """
+                SELECT to_char(left_at AT TIME ZONE 'UTC', 'YYYY-MM') AS month, count(*) AS n
+                FROM discord_members WHERE joined_at IS NOT NULL AND left_at IS NOT NULL GROUP BY 1 ORDER BY 1
+                """
+            )
+            totals = await conn.fetchrow(
+                f"""
+                SELECT count(*) AS records,
+                       count(*) FILTER (WHERE joined_at IS NULL) AS skipped_no_join_date,
+                       count(*) FILTER (WHERE {current}) AS members_net,
+                       count(*) FILTER (WHERE {current} AND onboarding_notification) AS onboarding_notification,
+                       count(*) FILTER (WHERE {current} AND onboarding_notification AND discord_reaction)
+                           AS discord_reaction
+                FROM discord_members
+                """
+            )
+            roles = await conn.fetch(
+                f"""
+                SELECT role_id, count(DISTINCT id) AS n
+                FROM discord_members, unnest(role_ids) AS role_id WHERE {current} GROUP BY 1 ORDER BY 1
+                """
+            )
+    return {
+        "new_members": {r["month"]: r["n"] for r in joins},
+        "left": {r["month"]: r["n"] for r in lefts},
+        "totals": {k: totals[k] for k in ("members_net", "onboarding_notification", "discord_reaction")},
+        "roles": {str(r["role_id"]): r["n"] for r in roles},
+        "records": totals["records"],
+        "skipped_no_join_date": totals["skipped_no_join_date"],
+    }
+
+
 # ── Retention ─────────────────────────────────────────────────────────────────
 
 # A day's expired messages and their cascaded edits can take far longer than the pool's 10s default
