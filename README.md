@@ -94,6 +94,6 @@ The message log needs the **Message Content** privileged intent, enabled under B
 
 ### Database backups
 
-Backups aren't run from this repo. PauseAI/infra's backup-image, a separate Railway service, dumps this database nightly, encrypts each dump with age and uploads it to Backblaze B2 with Object Lock. See the [backup-image README](https://github.com/PauseAI/infra/blob/main/backup-image/README.md) for how it's set up and how to restore a dump.
+Backups aren't run from this repo. PauseBot's Railway "backup" service runs PauseAI/infra's backup-image: each night it dumps this database, encrypts the dump with age and uploads it to Backblaze B2, where Object Lock keeps it for 30 days. How it's set up, its variables, and how to download, decrypt and restore a dump are in the [backup-image README](https://github.com/PauseAI/infra/blob/main/backup-image/README.md) (see [Restoring](https://github.com/PauseAI/infra/blob/main/backup-image/README.md#restoring)).
 
-Dumps contain the 30-day message log, so a dump holds members' messages. Delete any copy you download once you're done with it.
+Dumps contain the 30-day message log, so a dump holds members' messages. Restore on a trusted machine, not in a checkout an AI agent can read, and delete the downloaded file and the age identity file afterwards.
