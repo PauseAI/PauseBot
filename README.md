@@ -14,7 +14,6 @@ PauseBot is a Discord bot designed to streamline the onboarding pipeline for Pau
 - **Role-based Logic**: Easily map new or existing Discord Role IDs to specific email addresses.
 - **Server Snapshots** (replacing Xenon): Once a day, saves the server's roles, channels and permission overwrites, member roles and nicknames, and bans to Postgres. Kept for 30 days.
 - **Message Log** (replacing Quark): Stores every server message, its edits and when it was deleted in Postgres. Kept for 30 days from when the message was sent.
-- **Off-site Database Backups**: A separate daily cron job dumps the whole database and uploads it to buckets at one or more providers (Backblaze B2, Cloudflare R2, AWS S3), keeping 30 days of dumps in each.
 
 ## Prerequisites
 
@@ -129,67 +128,6 @@ To capture the dashboard settings as a file later, run `railway config pull` wit
 
 ### Database backups
 
-`jobs/backup.py` runs as its own Railway cron service, separate from the bot. The bot service stays on Railpack with no config. Railway has deprecated config files, so the backup service is set up by hand. Create a service from this repo and set these in its Settings:
+Backups aren't run from this repo. PauseBot's Railway "backup" service runs PauseAI/infra's backup-image: each night it dumps this database, encrypts the dump with age and uploads it to Backblaze B2, where Object Lock keeps it for 30 days. How it's set up, its variables, and how to download, decrypt and restore a dump are in the [backup-image README](https://github.com/PauseAI/infra/blob/main/backup-image/README.md) (see [Restoring](https://github.com/PauseAI/infra/blob/main/backup-image/README.md#restoring)).
 
-- **Builder**: Dockerfile, with the path `Dockerfile.backup`.
-- **Deploy > Cron Schedule**: `0 3 * * *` (daily at 03:00 UTC).
-- **Restart policy**: Never, so a failed run shows as failed instead of retrying.
-- **Watch Paths** (optional): `/jobs/**` and `/Dockerfile.backup`, so commits that only touch the bot don't rebuild it.
-
-Then give the backup service these variables. The `BACKUP_*` variables go on the backup service only, never on the bot service.
-
-- `DATABASE_URL`: the same database as the bot.
-- `RAILWAY_VOLUME_MOUNT_PATH` is set by Railway if you attach a volume, which keeps the last 7 days of dumps locally across redeploys.
-- Four variables for each provider you want a copy at, from the table below. Use different providers rather than two buckets at one, so one provider's outage or account problem can't take out every copy.
-
-| Provider | Variables | The location value |
-|---|---|---|
-| Backblaze B2 | `BACKUP_B2_REGION`, `BACKUP_B2_BUCKET`, `BACKUP_B2_KEY_ID`, `BACKUP_B2_SECRET` | The part of the bucket's S3 endpoint after `s3.`, e.g. `eu-central-003` |
-| Cloudflare R2 | `BACKUP_R2_ACCOUNT_ID`, `BACKUP_R2_BUCKET`, `BACKUP_R2_KEY_ID`, `BACKUP_R2_SECRET` | The 32-character account ID on the R2 overview page; add `.eu` (or `.fedramp`) for a bucket created in that jurisdiction |
-| AWS S3 | `BACKUP_S3_REGION`, `BACKUP_S3_BUCKET`, `BACKUP_S3_KEY_ID`, `BACKUP_S3_SECRET` | The bucket's region, e.g. `eu-west-2` |
-
-Each key needs read, write, list and delete access to its bucket, including deleting old file versions (B2 buckets keep every version by default, and cleanup removes each one). On B2, use an application key, not the master key, since only application keys work with the S3 API. On AWS, the key's policy needs `s3:PutObject`, `s3:ListBucket`, `s3:ListBucketVersions`, `s3:DeleteObject` and `s3:DeleteObjectVersion` on the bucket.
-
-With no provider configured, the job keeps the local dump only. A provider with only some of its variables set, or a location value in the wrong form (such as a full URL), is reported and fails the cron run, but the dump and the uploads to the correctly configured providers still go ahead. Uploads to the providers run at the same time; one failing doesn't stop the others. A failed upload, or a failed cleanup of old dumps, fails the cron run so Railway shows it.
-
-Dumps are uploaded to each bucket as `backups/pausebot-<timestamp>.dump`. After a successful upload, dumps older than 30 days are deleted from that bucket; nothing else in the bucket is touched. To restore one into a database, download it from any of the buckets (see [Downloading the latest dump](#downloading-the-latest-dump)) and run:
-
-```bash
-pg_restore --clean --if-exists --no-owner --no-privileges --dbname "$DATABASE_URL" pausebot-<timestamp>.dump
-```
-
-#### Downloading the latest dump
-
-`jobs/fetch_backup.py` downloads the newest dump from a bucket to your machine. It only lists and reads files under `backups/`; it never uploads or deletes anything. It prints the provider, bucket, file name, size, last modified time and local path, and never prints the key.
-
-**1. Create a separate read-only key.** Don't copy the cron job's key out of Railway: it can write and delete, and it should stay there. In Backblaze, go to Application Keys and add a new key with:
-
-- **Allow access to Bucket(s)**: `pauseai-pausebot-backups`
-- **Type of Access**: Read Only
-- **File name prefix**: `backups/`
-
-Backblaze shows the secret only once. For a read-only key on AWS, the policy needs `s3:ListBucket`, `s3:ListBucketVersions` and `s3:GetObject`.
-
-**2. Put it in `.env`** (which is gitignored), yourself, in an editor:
-
-```bash
-BACKUP_B2_REGION=eu-central-003
-BACKUP_B2_BUCKET=pauseai-pausebot-backups
-BACKUP_B2_KEY_ID=<keyID>
-BACKUP_B2_SECRET=<applicationKey>
-```
-
-Anything that can read `.env` can read the key, including an AI agent working in the same checkout. To keep the key from an agent, run this from a checkout the agent can't reach.
-
-**3. Run it** from the repo root:
-
-```bash
-pip install -r requirements.txt -r jobs/requirements.txt
-python jobs/fetch_backup.py
-```
-
-The dump lands in `backups/` at the repo root, which is gitignored. Use `--out DIR` to put it somewhere else. If a file with the same name and size is already there, it isn't downloaded again.
-
-If several providers are set up in `.env`, it uses the first one that works, in the order B2, R2, S3. Use `--provider b2`, `r2` or `s3` to choose one. It doesn't compare providers, so it warns you if the dump it found is more than 2 days old, which means recent backups to that bucket may have failed. It exits with a non-zero status and says why if variables are missing, the bucket has no dumps, or the provider rejects the key.
-
-**Delete the dump when you're done.** Dumps contain the 30-day message log, so a dump holds members' messages.
+Dumps contain the 30-day message log, so a dump holds members' messages. Restore on a trusted machine, not in a checkout an AI agent can read, and delete the downloaded file and the age identity file afterwards.
