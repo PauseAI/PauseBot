@@ -77,11 +77,35 @@ async def test_sends_neither_header_when_either_is_unset(token, monkeypatch, uns
     "http://crm.pauseai.info",
     "https://crm.pauseai.info:8443",
     "https://crm.pauseai.info.example.org",
+    "https://user@crm.pauseai.info",
 ])
 async def test_sends_neither_header_to_another_origin(token, base_url):
     session = FakeSession()
     await civicrm.link(session, base_url, KEY, 1, "ada")
     assert cf_header_names(session) == []
+
+
+@pytest.mark.parametrize("base_url", ["https://crm.pauseai.info:443", "https://CRM.pauseai.info/"])
+async def test_sends_the_service_token_to_the_production_crm_however_written(token, base_url):
+    session = FakeSession()
+    await civicrm.link(session, base_url, KEY, 1, "ada")
+    assert cf_header_names(session) == ["CF-Access-Client-Id", "CF-Access-Client-Secret"]
+
+
+@pytest.mark.parametrize("variable", ["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET", "key"])
+async def test_a_control_character_in_a_credential_fails_without_quoting_it(token, monkeypatch, capsys,
+                                                                            variable):
+    bad = "leaked-value\nX-Injected: 1"
+    key = bad if variable == "key" else KEY
+    if variable != "key":
+        monkeypatch.setenv(variable, bad)
+    session = FakeSession()
+    with pytest.raises(civicrm.LinkError) as error:
+        await civicrm.link(session, PROD, key, 1, "ada")
+    assert session.calls == []
+    # main.py logs a LinkError as f"...: {e}"
+    print(f"Stopping the CiviCRM link sweep, CiviCRM didn't answer: {error.value}")
+    assert "leaked-value" not in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("status", [301, 302, 307, 308])

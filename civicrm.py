@@ -6,6 +6,7 @@ has signed the Volunteer Agreement. The bot's API key can make this call and not
 """
 import json
 import os
+import re
 from urllib.parse import urlsplit
 import aiohttp
 
@@ -20,7 +21,19 @@ class LinkError(Exception):
 BATCH_SIZE = 500
 
 # Only the production CRM sits behind Cloudflare Access; the service token goes nowhere else
-CF_ACCESS_ORIGIN = ("https", "crm.pauseai.info")
+CF_ACCESS_HOST = "crm.pauseai.info"
+CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _is_production_crm(url):
+    """Whether url's origin is https://crm.pauseai.info, an explicit :443 included."""
+    parts = urlsplit(url)
+    try:
+        port = parts.port or 443
+    except ValueError:
+        return False
+    return (parts.scheme == "https" and parts.hostname == CF_ACCESS_HOST and port == 443
+            and parts.username is None and parts.password is None)
 
 
 def _cf_access_headers(url):
@@ -28,8 +41,7 @@ def _cf_access_headers(url):
     and CF_ACCESS_CLIENT_SECRET are set and url is on the production CRM, otherwise none."""
     client_id = os.getenv("CF_ACCESS_CLIENT_ID")
     client_secret = os.getenv("CF_ACCESS_CLIENT_SECRET")
-    parts = urlsplit(url)
-    if not client_id or not client_secret or (parts.scheme, parts.netloc.lower()) != CF_ACCESS_ORIGIN:
+    if not client_id or not client_secret or not _is_production_crm(url):
         return {}
     return {"CF-Access-Client-Id": client_id, "CF-Access-Client-Secret": client_secret}
 
@@ -39,6 +51,9 @@ async def _call(session, base_url, api_key, action, params):
     url = f"{base_url.rstrip('/')}/civicrm/ajax/api4/PauseaiDiscordMember/{action}"
     headers = {"X-Civi-Auth": f"Bearer {api_key}", "X-Requested-With": "XMLHttpRequest",
                **_cf_access_headers(url)}
+    # Checked here so the message is fixed: the HTTP client's own refusal could quote the value
+    if any(CONTROL_CHARACTER.search(value) for value in headers.values()):
+        raise LinkError("CIVICRM_API_KEY or the Cloudflare Access token has a control character in it")
     try:
         # A followed redirect would carry the key and the service token to wherever it points
         async with session.post(url, headers=headers, data={"params": json.dumps(params)},
