@@ -5,6 +5,8 @@ then on grants the volunteer role itself through /webhook/add_role once the memb
 has signed the Volunteer Agreement. The bot's API key can make this call and nothing else.
 """
 import json
+import os
+from urllib.parse import urlsplit
 import aiohttp
 
 LINK_TIMEOUT = aiohttp.ClientTimeout(total=30)
@@ -17,19 +19,39 @@ class LinkError(Exception):
 # The most members CiviCRM's linkMany takes in one call
 BATCH_SIZE = 500
 
+# Only the production CRM sits behind Cloudflare Access; the service token goes nowhere else
+CF_ACCESS_ORIGIN = ("https", "crm.pauseai.info")
+
+
+def _cf_access_headers(url):
+    """The Cloudflare Access service-token headers for a request to url: both when CF_ACCESS_CLIENT_ID
+    and CF_ACCESS_CLIENT_SECRET are set and url is on the production CRM, otherwise none."""
+    client_id = os.getenv("CF_ACCESS_CLIENT_ID")
+    client_secret = os.getenv("CF_ACCESS_CLIENT_SECRET")
+    parts = urlsplit(url)
+    if not client_id or not client_secret or (parts.scheme, parts.netloc.lower()) != CF_ACCESS_ORIGIN:
+        return {}
+    return {"CF-Access-Client-Id": client_id, "CF-Access-Client-Secret": client_secret}
+
 
 async def _call(session, base_url, api_key, action, params):
     """One API4 call on PauseaiDiscordMember; returns its rows."""
     url = f"{base_url.rstrip('/')}/civicrm/ajax/api4/PauseaiDiscordMember/{action}"
-    headers = {"X-Civi-Auth": f"Bearer {api_key}", "X-Requested-With": "XMLHttpRequest"}
+    headers = {"X-Civi-Auth": f"Bearer {api_key}", "X-Requested-With": "XMLHttpRequest",
+               **_cf_access_headers(url)}
     try:
+        # A followed redirect would carry the key and the service token to wherever it points
         async with session.post(url, headers=headers, data={"params": json.dumps(params)},
-                                timeout=LINK_TIMEOUT) as response:
+                                timeout=LINK_TIMEOUT, allow_redirects=False) as response:
+            if 300 <= response.status < 400:
+                raise LinkError(f"HTTP {response.status}: CiviCRM answered a redirect, which is not followed;"
+                                " check CIVICRM_URL")
             if response.status != 200:
                 raise LinkError(f"HTTP {response.status}: {(await response.text())[:200]}")
             body = await response.json(content_type=None)
     except (aiohttp.ClientError, TimeoutError, ValueError) as e:
-        raise LinkError(repr(e)) from e
+        # Not repr(e): a ClientResponseError's repr holds the request's headers
+        raise LinkError(f"{type(e).__name__}: {e}") from e
     values = body.get("values") if isinstance(body, dict) else None
     if not isinstance(values, list) or not all(isinstance(v, dict) and "status" in v for v in values):
         raise LinkError(f"Unexpected answer: {body!r}")
