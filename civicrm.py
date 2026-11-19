@@ -29,10 +29,10 @@ def _is_production_crm(url):
     """Whether url's origin is https://crm.pauseai.info, an explicit :443 included."""
     parts = urlsplit(url)
     try:
-        port = parts.port or 443
+        port = parts.port
     except ValueError:
         return False
-    return (parts.scheme == "https" and parts.hostname == CF_ACCESS_HOST and port == 443
+    return (parts.scheme == "https" and parts.hostname == CF_ACCESS_HOST and port in (None, 443)
             and parts.username is None and parts.password is None)
 
 

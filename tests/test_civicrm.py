@@ -2,10 +2,10 @@ import json
 import aiohttp
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import TestServer
 from multidict import CIMultiDict, CIMultiDictProxy
 from yarl import URL
 import civicrm
+from conftest import civicrm_server
 
 PROD = "https://crm.pauseai.info"
 KEY = "test-key-not-real"
@@ -78,6 +78,7 @@ async def test_sends_neither_header_when_either_is_unset(token, monkeypatch, uns
     "https://crm.pauseai.info:8443",
     "https://crm.pauseai.info.example.org",
     "https://user@crm.pauseai.info",
+    "https://crm.pauseai.info:0",
 ])
 async def test_sends_neither_header_to_another_origin(token, base_url):
     session = FakeSession()
@@ -92,20 +93,22 @@ async def test_sends_the_service_token_to_the_production_crm_however_written(tok
     assert cf_header_names(session) == ["CF-Access-Client-Id", "CF-Access-Client-Secret"]
 
 
-@pytest.mark.parametrize("variable", ["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET", "key"])
-async def test_a_control_character_in_a_credential_fails_without_quoting_it(token, monkeypatch, capsys,
-                                                                            variable):
-    bad = "leaked-value\nX-Injected: 1"
-    key = bad if variable == "key" else KEY
-    if variable != "key":
-        monkeypatch.setenv(variable, bad)
+BAD = "leaked-value\nX-Injected: 1"
+
+
+@pytest.mark.parametrize("variable, key", [
+    ("CF_ACCESS_CLIENT_ID", KEY),
+    ("CF_ACCESS_CLIENT_SECRET", KEY),
+    (None, BAD),
+])
+async def test_a_control_character_in_a_credential_fails_without_quoting_it(token, monkeypatch, variable, key):
+    if variable:
+        monkeypatch.setenv(variable, BAD)
     session = FakeSession()
     with pytest.raises(civicrm.LinkError) as error:
         await civicrm.link(session, PROD, key, 1, "ada")
     assert session.calls == []
-    # main.py logs a LinkError as f"...: {e}"
-    print(f"Stopping the CiviCRM link sweep, CiviCRM didn't answer: {error.value}")
-    assert "leaked-value" not in capsys.readouterr().out
+    assert "leaked-value" not in str(error.value)
 
 
 @pytest.mark.parametrize("status", [301, 302, 307, 308])
@@ -119,12 +122,13 @@ async def test_a_redirect_is_an_error_and_is_not_followed(status):
         followed.append(dict(request.headers))
         return web.json_response({"values": [{"status": "ok"}]})
 
-    app = web.Application()
-    app.router.add_post("/civicrm/ajax/api4/PauseaiDiscordMember/link", redirect)
-    app.router.add_route("*", "/elsewhere", elsewhere)
-    async with TestServer(app) as server, aiohttp.ClientSession() as session:
-        with pytest.raises(civicrm.LinkError, match=f"HTTP {status}: CiviCRM answered a redirect") as error:
-            await civicrm.link(session, str(server.make_url("")), KEY, 1, "ada")
+    server = await civicrm_server(redirect, {"/elsewhere": elsewhere})
+    try:
+        async with aiohttp.ClientSession() as session:
+            with pytest.raises(civicrm.LinkError, match=f"HTTP {status}: CiviCRM answered a redirect") as error:
+                await civicrm.link(session, str(server.make_url("")), KEY, 1, "ada")
+    finally:
+        await server.close()
     assert followed == []
     assert KEY not in str(error.value)
 

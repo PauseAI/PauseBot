@@ -2,6 +2,8 @@ import os
 import urllib.parse
 import urllib.request
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 from moto.server import ThreadedMotoServer
 import db
 from jobs import backup
@@ -61,3 +63,14 @@ def make_target(s3_endpoint):
         return target
 
     return make
+
+
+async def civicrm_server(handler, routes=None):
+    """A started test server answering CiviCRM's link call with handler, plus any {path: handler} in routes."""
+    app = web.Application()
+    app.router.add_post("/civicrm/ajax/api4/PauseaiDiscordMember/link", handler)
+    for path, route_handler in (routes or {}).items():
+        app.router.add_route("*", path, route_handler)
+    server = TestServer(app)
+    await server.start_server()
+    return server
