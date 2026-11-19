@@ -56,6 +56,7 @@ PauseBot is a Discord bot designed to streamline the onboarding pipeline for Pau
    - `DISCORD_TOKEN`: Your Discord bot token.
    - `MAILERSEND_API_KEY`: Your MailerSend API Key.
    - `CIVICRM_URL`, `CIVICRM_API_KEY`: CiviCRM's address and the bot's API key, for linking members.
+   - `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`: the bot's Cloudflare Access service token, which the CRM API needs once it sits behind Cloudflare Access. With both set, every CiviCRM call sends them as `CF-Access-Client-Id` and `CF-Access-Client-Secret`, only when `CIVICRM_URL` is `https://crm.pauseai.info`; with either unset it sends neither. CiviCRM calls never follow a redirect: a 3xx fails the call.
    - `WEBHOOK_SECRET`: A secret string of your choosing. Required if using the webhooks for assigning roles.
    - `STATS_SECRET`: Another secret, different from `WEBHOOK_SECRET`, for the onboarding dashboard to read `/stats/discord`. Without it, that endpoint refuses every request.
    - `PORT`: (Optional) Custom port for the web server to run over (defaults to 8080).

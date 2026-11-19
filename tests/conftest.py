@@ -1,6 +1,8 @@
 import os
 import urllib.parse
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 import db
 
 # Tests drop and recreate tables, so they only ever run against a database whose name ends in _test.
@@ -27,3 +29,13 @@ async def pool(dsn):
     yield pool
     await pool.close()
 
+
+async def civicrm_server(handler, routes=None):
+    """A started test server answering CiviCRM's link call with handler, plus any {path: handler} in routes."""
+    app = web.Application()
+    app.router.add_post("/civicrm/ajax/api4/PauseaiDiscordMember/link", handler)
+    for path, route_handler in (routes or {}).items():
+        app.router.add_route("*", path, route_handler)
+    server = TestServer(app)
+    await server.start_server()
+    return server

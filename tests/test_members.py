@@ -7,6 +7,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 import civicrm
 import members
+from conftest import civicrm_server
 from jobs.copy_airtable_members import from_airtable
 
 
@@ -59,14 +60,6 @@ def test_from_airtable_skips_records_without_an_id():
 
 
 # ── CiviCRM link ──────────────────────────────────────────────────────────────
-
-async def civicrm_server(handler):
-    app = web.Application()
-    app.router.add_post("/civicrm/ajax/api4/PauseaiDiscordMember/link", handler)
-    server = TestServer(app)
-    await server.start_server()
-    return server
-
 
 async def test_link_sends_the_key_and_the_id_as_a_string():
     seen = {}
