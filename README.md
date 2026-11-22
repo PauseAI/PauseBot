@@ -172,7 +172,9 @@ Everything is read from the live server on each run, so after a partial failure,
    python3 jobs/country_regions.py --onboarding
    ```
 
-4. Read `onboarding_new.json`, then send it to Discord:
+   If a country question also has an option giving a role that isn't a country in the table, it stops and names the option, so nothing is lost: move that option to another question by hand, or add the country to the table. Options that give no role (such as a "not listed? ask here" one) are dropped, and listed.
+
+4. Read `onboarding_new.json`, then send it to Discord. It saves the current config to `country_regions_backup-onboarding-<time>.json` first:
 
    ```bash
    python3 jobs/country_regions.py --onboarding --apply-onboarding

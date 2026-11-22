@@ -17,6 +17,7 @@ categories, and those only once they're empty.
 """
 import argparse
 import datetime
+import http.client
 import json
 import os
 import re
@@ -131,6 +132,9 @@ class DiscordHTTP:
         if method != "GET":
             headers["X-Audit-Log-Reason"] = AUDIT_REASON
         data = None if body is None else json.dumps(body).encode()
+        # A POST that failed with a server or network error may still have happened, so it isn't
+        # retried: the script stops, and a rerun reads the live server to see what's left.
+        retry_failures = method != "POST"
         for attempt in range(8):
             req = urllib.request.Request(API + path, data=data, method=method, headers=headers)
             try:
@@ -144,17 +148,20 @@ class DiscordHTTP:
                 if error.code == 429:
                     try:
                         wait = float(json.loads(text).get("retry_after", 1))
-                    except ValueError:
+                    except (ValueError, TypeError, AttributeError):
                         wait = 5
                     print(f"  (rate limited, waiting {wait:.1f}s)")
                     self._sleep(wait + 0.5)
                     continue
-                if error.code >= 500:
+                if error.code >= 500 and retry_failures:
                     self._sleep(2 ** attempt)
                     continue
                 raise DiscordError(method, path, error.code, text[:1000]) from None
-            except urllib.error.URLError as error:
-                print(f"  (network error {error.reason}, retrying)")
+            except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
+                if not retry_failures:
+                    raise DiscordError(method, path, "network error", f"{error}; it may or may not have "
+                                       "happened, so check before running again") from None
+                print(f"  (network error {error}, retrying)")
                 self._sleep(2 ** attempt)
         raise DiscordError(method, path, "gave up", "too many retries")
 
@@ -313,6 +320,12 @@ def plan_restructure(state, out=print):
                     f"for {country}. Move it into {REGION_CATEGORY_NAMES[region]} by hand if it's the country's.")
                 continue
             entries.append((name, role))
+        # A country channel whose role is missing or named differently still moves into its region
+        listed = {name for name, _ in entries}
+        for name in pool:
+            if name not in listed and region_of(COUNTRY_BY_SLUG.get(name, "")) == region:
+                entries.append((name, None))
+                out(f"WARNING: #{name} has no role named like it, so it moves without a welcome or onboarding option.")
         for name, extra_region in EXTRA_CHANNELS.items():
             if extra_region == region and name in pool:
                 entries.append((name, None))
@@ -511,12 +524,8 @@ def retire_request_channel(run, plan, categories):
                      "position": position}])
         channel["parent_id"], channel["position"] = plan.guide["id"], position
 
-    if run.apply:
-        recent = run.http.request("GET", f"/channels/{channel['id']}/messages?limit=50")
-        posted = any(m.get("content", "").startswith(REQUEST_NOTICE_START) for m in recent)
-    else:
-        posted = False
-    if not posted:
+    recent = run.http.request("GET", f"/channels/{channel['id']}/messages?limit=50")
+    if not any(m.get("content", "").startswith(REQUEST_NOTICE_START) for m in recent):
         run.change(f"Post the 'requests are no longer needed' notice in #{name}", "POST",
                    f"/channels/{channel['id']}/messages",
                    {"content": request_notice(categories, state), "allowed_mentions": {"parse": []}})
@@ -530,6 +539,10 @@ def retire_request_channel(run, plan, categories):
                    f"/channels/{channel['id']}/permissions/{everyone}",
                    {"type": 0, "allow": new["allow"], "deny": new["deny"]})
         channel["permission_overwrites"] = [o for o in channel["permission_overwrites"] if o["id"] != everyone] + [new]
+    for o in channel["permission_overwrites"]:
+        if o["id"] != everyone and int(o["allow"]) & SEND_MESSAGES:
+            target = state.roles.get(o["id"], {}).get("name", f"member {o['id']}")
+            run.warn(f"#{name} still lets {target} send messages (its own overwrite allows it).")
 
 
 def check_bot(http, state, run, onboarding=False):
@@ -601,8 +614,7 @@ def onboarding_payload(onboarding, prompts):
 
 
 def is_country_prompt(prompt, country_role_ids):
-    role_ids = [r for o in prompt["options"] for r in o.get("role_ids", [])]
-    return bool(role_ids) and all(r in country_role_ids for r in role_ids)
+    return any(r in country_role_ids for o in prompt["options"] for r in o.get("role_ids", []))
 
 
 def build_onboarding(state, onboarding, ids=None):
@@ -620,6 +632,14 @@ def build_onboarding(state, onboarding, ids=None):
 
     prompts = onboarding.get("prompts", [])
     country_prompts = [p for p in prompts if is_country_prompt(p, country_role_ids)]
+    mixed = [f"'{o['title']}' in '{p['title']}'" for p in country_prompts for o in p["options"]
+             if any(r not in country_role_ids for r in o.get("role_ids", []))]
+    if mixed:
+        raise Abort("These options in a country question give a role that isn't a country in the region "
+                    "table, so the question can't simply be replaced: " + ", ".join(mixed)
+                    + ". Move them to another question by hand (or add the country to the table), then rerun.")
+    dropped = [f"'{o['title']}' (in '{p['title']}')" for p in country_prompts for o in p["options"]
+               if not o.get("role_ids") and not p["title"].startswith(PROMPT_TITLE_PREFIX)]
     old_options = {}  # role id -> option, from the old country questions
     for prompt in country_prompts:
         for option in prompt["options"]:
@@ -688,6 +708,8 @@ def build_onboarding(state, onboarding, ids=None):
              if p["title"] not in existing_regional]
     lines += [f"  Rebuild question '{p['title']}' (from an earlier run)" for p in country_prompts
               if p["title"] in existing_regional]
+    if dropped:
+        lines.append(f"  Drop options that give no role: {', '.join(dropped)}")
     lines += summary
     lines += [f"  Keep question '{p['title']}' unchanged" for p in kept_before + kept_after]
     lines.append(f"  Keep {len(onboarding.get('default_channel_ids', []))} default channels, "
@@ -810,6 +832,10 @@ def main(argv=None, http=None, out=print, env=os.environ):
     parser.add_argument("--backup", default="country_regions_backup.json")
     parser.add_argument("--guild", default=PAUSEAI_GUILD_ID)
     args = parser.parse_args(argv)
+    if args.onboarding and args.apply:
+        parser.error("use --apply-onboarding with --onboarding (--apply is for the channel changes)")
+    if args.apply_onboarding and not args.onboarding:
+        parser.error("--apply-onboarding goes with --onboarding")
 
     if http is None:
         token = env.get("DISCORD_TOKEN")
@@ -872,7 +898,11 @@ def run_onboarding(http, state, args, out):
     if not args.apply_onboarding:
         out("\nRead it, then run again with --apply-onboarding to send it to Discord.")
         return 0
-    save_backup(args.backup, backup_data(http, state, onboarding), out)
+    # Always a new file: country_regions_backup.json is the layout from before --apply, kept for rollback
+    stamped = Path(args.backup)
+    stamped = stamped.with_name(f"{stamped.stem}-onboarding-{datetime.datetime.now():%Y%m%d-%H%M%S}{stamped.suffix}")
+    stamped.write_text(json.dumps(backup_data(http, state, onboarding), indent=2, ensure_ascii=False))
+    out(f"Saved the current layout and onboarding to {stamped}")
     result = run.change(f"Replace onboarding ({len(payload['prompts'])} questions)", "PUT",
                         f"/guilds/{args.guild}/onboarding", payload)
     out(f"Done: Discord now has {len(result.get('prompts', []))} onboarding questions.")

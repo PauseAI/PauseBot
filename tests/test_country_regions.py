@@ -363,3 +363,94 @@ def test_missing_token(tmp_path):
     lines = []
     assert cr.main([], out=lines.append, env={}) == 2
     assert "DISCORD_TOKEN" in lines[0]
+
+
+# ---- Found in review ----
+
+def with_channel(name, category="🌍 COUNTRIES", overwrites=()):
+    data = load_fixture()
+    parent = next(c for c in data["channels"] if c["name"] == category)
+    data["channels"].append({"id": "5998", "name": name, "type": 0, "position": 30, "parent_id": parent["id"],
+                             "permission_overwrites": list(overwrites), "last_message_id": "1"})
+    return data
+
+
+def test_a_country_channel_without_a_matching_role_still_moves(tmp_path):
+    fake = FakeDiscord(with_channel("czechia"))
+    output = apply(fake, tmp_path)
+
+    assert fake.category_of("czechia") == "🌍 EUROPE"
+    assert "🌍 COUNTRIES" not in {c["name"] for c in fake.channels.values()}
+    assert "#czechia has no role named like it" in output
+    assert fake.channel("czechia")["id"] not in fake.messages
+
+
+def test_dry_run_after_apply_has_nothing_left(tmp_path):
+    fake = FakeDiscord()
+    apply(fake, tmp_path)
+    code, output = run(fake, tmp_path=tmp_path)
+    assert code == 0 and "No changes needed" in output, output
+
+
+def test_warns_when_a_role_can_still_send_in_the_locked_channel(tmp_path):
+    data = load_fixture()
+    request = next(c for c in data["channels"] if c["name"].startswith("request"))
+    sm = next(r for r in data["roles"] if r["name"] == "Server Manager")
+    request["permission_overwrites"].append({"id": sm["id"], "type": 0, "allow": str(cr.SEND_MESSAGES), "deny": "0"})
+    output = apply(FakeDiscord(data), tmp_path)
+    assert "still lets Server Manager send messages" in output
+
+
+def test_onboarding_stops_on_a_country_question_with_a_non_country_role(tmp_path):
+    fake = FakeDiscord()
+    apply(fake, tmp_path)
+    california = next(r for r in fake.roles.values() if r["name"] == "California")
+    fake.onboarding["prompts"][1]["options"].append(
+        {"id": "8099", "title": "California", "description": None, "role_ids": [california["id"]],
+         "channel_ids": [], "emoji": None})
+    code, output = run(fake, "--onboarding", tmp_path=tmp_path)
+    assert code == 1 and "'California' in 'Which country are you in?'" in output
+    assert not (tmp_path / "onboarding.json").exists()
+
+
+def test_onboarding_lists_dropped_options(tmp_path):
+    fake, before, payload, output = onboarding_after_apply(tmp_path)
+    assert "Drop options that give no role: 'Not listed? Ask here' (in 'More countries')" in output
+
+
+def test_onboarding_apply_keeps_the_original_backup(tmp_path):
+    fake, before, payload, output = onboarding_after_apply(tmp_path, "--apply-onboarding")
+    original = json.loads((tmp_path / "backup.json").read_text())
+    assert "🌍 COUNTRIES" in {c["name"] for c in original["channels"]}
+    assert list(tmp_path.glob("backup-onboarding-*.json"))
+
+
+def test_onboarding_with_plain_apply_is_refused(tmp_path):
+    with pytest.raises(SystemExit):
+        run(FakeDiscord(), "--onboarding", "--apply", tmp_path=tmp_path)
+
+
+def test_http_never_retries_a_post_that_may_have_happened(monkeypatch):
+    calls = []
+
+    def urlopen(request, timeout):
+        calls.append(request)
+        raise urllib.error.HTTPError(request.full_url, 502, "Bad Gateway", {}, io.BytesIO(b"oops"))
+
+    monkeypatch.setattr(cr.urllib.request, "urlopen", urlopen)
+    with pytest.raises(cr.DiscordError):
+        cr.DiscordHTTP("t", sleep=lambda s: None).request("POST", "/channels/1/messages", {"content": "hi"})
+    assert len(calls) == 1
+
+
+def test_http_retries_reads_after_a_timeout(monkeypatch):
+    calls = []
+
+    def urlopen(request, timeout):
+        calls.append(request)
+        if len(calls) == 1:
+            raise TimeoutError("read timed out")
+        return Response([])
+
+    monkeypatch.setattr(cr.urllib.request, "urlopen", urlopen)
+    assert cr.DiscordHTTP("t", sleep=lambda s: None).request("GET", "/x") == []
