@@ -266,3 +266,56 @@ def test_channel_id_from_env(monkeypatch):
     assert main.channel_id_from_env("MESSAGE_LOG_CHANNEL_ID") is None
     monkeypatch.setenv("MESSAGE_LOG_CHANNEL_ID", "1234")
     assert main.channel_id_from_env("MESSAGE_LOG_CHANNEL_ID") == 1234
+
+
+def cached_message(message_id, content, author_id=AUTHOR, bot=False):
+    return types.SimpleNamespace(
+        id=message_id, content=content, guild=types.SimpleNamespace(id=GUILD),
+        channel=types.SimpleNamespace(id=GENERAL), author=types.SimpleNamespace(id=author_id, bot=bot),
+        attachments=[types.SimpleNamespace(filename="spam.png")], created_at=NOW,
+    )
+
+
+async def test_a_deletion_that_beats_its_log_write_posts_from_the_message_cache(log_channel, pool):
+    event = delete_event(7)
+    event.cached_message = cached_message(7, "deleted at once")
+    await main.on_raw_message_delete(event)
+    [embed] = posted(log_channel)
+    assert "deleted at once" in embed.description and "spam.png" in embed.description
+
+
+async def test_a_cached_bots_deletion_posts_nothing(log_channel, pool):
+    event = delete_event(7)
+    event.cached_message = cached_message(7, "bot text", author_id=OTHER_BOT, bot=True)
+    await main.on_raw_message_delete(event)
+    assert log_channel.sent == []
+
+
+async def test_a_bulk_deletion_uses_the_cache_for_messages_not_yet_logged(log_channel, pool):
+    await log(pool, 1, content="logged")
+    event = bulk_event([1, 2, 3])
+    event.cached_messages = [cached_message(2, "cached"), cached_message(1, "stale cache copy")]
+    await main.on_raw_bulk_message_delete(event)
+    texts = [e.description for e in posted(log_channel)]
+    assert any("logged" in t for t in texts) and any("cached" in t for t in texts)
+    assert not any("stale cache copy" in t for t in texts)
+    assert posted(log_channel)[-1].title == "1 more message deleted"
+
+
+async def test_one_failed_delete_does_not_stop_the_prune(log_channel):
+    class Gone(FakeMessage):
+        async def delete(self):
+            raise discord.NotFound(types.SimpleNamespace(status=404, reason="Not Found"), "gone")
+
+    old = NOW - datetime.timedelta(days=31)
+    gone, ours = Gone(BOT_ID), FakeMessage(BOT_ID)
+    for m in (gone, ours):
+        m.created_at, m.embeds = old, []
+    log_channel._history = [gone, ours]
+    assert await main.prune_log_channel(now=NOW) == 1
+    assert ours.deleted
+
+
+def test_a_bad_channel_id_turns_the_log_channel_off_rather_than_crashing(monkeypatch):
+    monkeypatch.setenv("MESSAGE_LOG_CHANNEL_ID", "https://discord.com/channels/1/2")
+    assert main.channel_id_from_env("MESSAGE_LOG_CHANNEL_ID") is None

@@ -30,9 +30,16 @@ CIVICRM_URL = os.getenv('CIVICRM_URL')
 CIVICRM_API_KEY = os.getenv('CIVICRM_API_KEY')
 
 def channel_id_from_env(name):
-    """A channel ID from the environment, or None when unset or blank."""
+    """A channel ID from the environment, or None when unset, blank or not a number (so a bad
+    value turns the feature off rather than stopping the bot)."""
     value = (os.getenv(name) or "").strip()
-    return int(value) if value else None
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        print(f"Warning: {name} is not a channel ID ({len(value)} characters); ignoring it.")
+        return None
 
 # The moderators' log channel (#logs), where message edits and deletions are posted. Unset means off.
 MESSAGE_LOG_CHANNEL_ID = channel_id_from_env('MESSAGE_LOG_CHANNEL_ID')
@@ -876,6 +883,8 @@ async def on_raw_message_edit(payload):
         author_id = int(payload.data["author"]["id"])
     except (KeyError, TypeError, ValueError):
         return
+    if is_bot_user(author_id):
+        return
     await post_to_log_channel(payload.guild_id, payload.channel_id, [modlog.edit_embed(
         guild_id=payload.guild_id, channel_id=payload.channel_id, message_id=payload.message_id,
         author_id=author_id, before=before, after=payload.data["content"], edited_at=edited_at,
@@ -888,11 +897,13 @@ async def on_raw_message_delete(payload):
         return
     deleted_at = datetime.datetime.now(datetime.UTC)
     try:
-        rows = await db.log_delete(db_pool, [payload.message_id], deleted_at)
+        rows = await asyncio.wait_for(
+            db.log_delete(db_pool, [payload.message_id], deleted_at), LOG_WRITE_TIMEOUT)
     except Exception as e:
         print(f"Error logging deletion of message {payload.message_id}: {e}")
-        return
-    await post_deletions(payload.guild_id, payload.channel_id, rows, deleted_at)
+        rows = []
+    cached = [payload.cached_message] if payload.cached_message else []
+    await post_deletions(payload.guild_id, payload.channel_id, [payload.message_id], rows, cached, deleted_at)
 
 @bot.event
 async def on_raw_bulk_message_delete(payload):
@@ -900,13 +911,13 @@ async def on_raw_bulk_message_delete(payload):
         return
     deleted_at = datetime.datetime.now(datetime.UTC)
     try:
-        rows = await db.log_delete(db_pool, payload.message_ids, deleted_at)
+        rows = await asyncio.wait_for(
+            db.log_delete(db_pool, payload.message_ids, deleted_at), LOG_WRITE_TIMEOUT)
     except Exception as e:
         print(f"Error logging bulk deletion in channel {payload.channel_id}: {e}")
-        return
-    # Messages the log doesn't have can't be shown, but moderators still see how many went
-    await post_deletions(payload.guild_id, payload.channel_id, rows, deleted_at,
-                         unlogged=len(payload.message_ids) - len(rows))
+        rows = []
+    await post_deletions(payload.guild_id, payload.channel_id, payload.message_ids, rows,
+                         payload.cached_messages, deleted_at)
 
 # ── Log channel (replacing Quark's posts in #logs) ────────────────────────────
 
@@ -928,13 +939,28 @@ def thread_parent_id(guild_id, channel_id):
     channel = guild.get_channel_or_thread(channel_id) if guild else None
     return channel.parent_id if isinstance(channel, discord.Thread) else None
 
+def is_bot_user(user_id):
+    """Whether the user cache knows user_id as a bot (or as this bot)."""
+    if bot.user and user_id == bot.user.id:
+        return True
+    user = bot.get_user(user_id)
+    return bool(user and user.bot)
+
 def is_bot_author(row):
     """Whether a logged message was a bot's. Rows logged before author_bot existed read false,
     so fall back on the user cache."""
-    if row["author_bot"]:
-        return True
-    user = bot.get_user(row["author_id"])
-    return bool(user and user.bot)
+    return bool(row["author_bot"]) or is_bot_user(row["author_id"])
+
+def row_from_cached(message):
+    """A cached discord.Message in the shape log_delete returns, for a message deleted before its
+    log write landed (on_message logs in the background, so a fast auto-delete can beat it)."""
+    return {
+        "message_id": message.id, "guild_id": message.guild.id if message.guild else None,
+        "channel_id": message.channel.id, "author_id": message.author.id,
+        "author_bot": message.author.bot, "content": message.content,
+        "attachments": [{"filename": a.filename} for a in message.attachments],
+        "created_at": message.created_at,
+    }
 
 async def post_to_log_channel(guild_id, channel_id, embeds):
     channel = log_channel_for(guild_id, channel_id)
@@ -947,14 +973,22 @@ async def post_to_log_channel(guild_id, channel_id, embeds):
             print(f"Error posting to the log channel: {e}")
             return
 
-async def post_deletions(guild_id, channel_id, rows, deleted_at, unlogged=0):
+async def post_deletions(guild_id, channel_id, message_ids, rows, cached, deleted_at):
+    """Posts the deleted messages: from the log's rows, else from discord.py's message cache.
+    Messages neither has are counted in one post rather than shown."""
     if log_channel_for(guild_id, channel_id) is None:
         return
+    rows = list(rows)
+    logged = {r["message_id"] for r in rows}
+    rows += [row_from_cached(m) for m in cached if m.id not in logged]
+    known = {r["message_id"] for r in rows}
+    unknown = sum(1 for i in message_ids if i not in known)
     parent_id = thread_parent_id(guild_id, channel_id)
     rows = sorted((r for r in rows if not is_bot_author(r)), key=lambda r: r["created_at"])
     embeds = [modlog.delete_embed(r, deleted_at, parent_id) for r in rows]
-    if unlogged > 0:
-        embeds.append(modlog.unlogged_embed(unlogged, channel_id, deleted_at, parent_id))
+    # Only for bulk deletions: a single unknown deletion has nothing worth showing
+    if unknown and len(message_ids) > 1:
+        embeds.append(modlog.unlogged_embed(unknown, channel_id, deleted_at, parent_id))
     await post_to_log_channel(guild_id, channel_id, embeds)
 
 # How far back past the cutoff each daily run looks for the bot's own old posts. Covers the bot
@@ -979,8 +1013,13 @@ async def prune_log_channel(now=None):
         if message.author.id != bot.user.id:
             continue
         if modlog.oldest_quoted(message) < cutoff:
-            await message.delete()
-            removed += 1
+            try:
+                await message.delete()
+                removed += 1
+            except discord.NotFound:
+                pass  # someone deleted it already
+            except Exception as e:
+                print(f"Error deleting log channel post {message.id}: {e}")
     return removed
 
 if __name__ == "__main__":

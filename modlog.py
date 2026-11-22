@@ -84,10 +84,11 @@ def delete_embed(row, deleted_at, parent_id=None):
 
 
 def unlogged_embed(count, channel_id, deleted_at, parent_id=None):
-    """Bulk-deleted messages the log has nothing on (sent over 30 days ago, or while the bot was down)."""
+    """Bulk-deleted messages neither the log nor discord.py's cache has."""
     return discord.Embed(
         title=f"{count} more message{'s' if count != 1 else ''} deleted",
-        description=f"**Channel:** {where(channel_id, parent_id)}\nNot in the message log, so their text isn't known.",
+        description=f"**Channel:** {where(channel_id, parent_id)}\nTheir text isn't known: they're not in the "
+                    "message log (sent over 30 days ago, while PauseBot was down, or by PauseBot itself).",
         colour=DELETE_COLOUR, timestamp=deleted_at,
     )
 
