@@ -319,3 +319,81 @@ async def test_one_failed_delete_does_not_stop_the_prune(log_channel):
 def test_a_bad_channel_id_turns_the_log_channel_off_rather_than_crashing(monkeypatch):
     monkeypatch.setenv("MESSAGE_LOG_CHANNEL_ID", "https://discord.com/channels/1/2")
     assert main.channel_id_from_env("MESSAGE_LOG_CHANNEL_ID") is None
+
+
+# ── Internal channels left out ────────────────────────────────────────────────
+
+STAFF_CATEGORY = 7000
+STAFF_CHANNEL = 7001
+MEMBER_CATEGORY = 8000
+ARCHIVED_THREAD = 7002
+
+
+class FakeThread(discord.Thread):
+    def __init__(self, thread_id, parent_id):
+        self.id, self.parent_id = thread_id, parent_id
+
+    @property
+    def category_id(self):
+        return None  # Tests that the parent's category is looked up, not this
+
+
+class FakeGuild:
+    def __init__(self):
+        self.cached = {
+            GENERAL: types.SimpleNamespace(id=GENERAL, category_id=MEMBER_CATEGORY),
+            STAFF_CHANNEL: types.SimpleNamespace(id=STAFF_CHANNEL, category_id=STAFF_CATEGORY),
+            9001: FakeThread(9001, STAFF_CHANNEL),
+            9002: FakeThread(9002, GENERAL),
+        }
+        # Archived threads usually aren't cached; Discord still answers for them
+        self.remote = {ARCHIVED_THREAD: FakeThread(ARCHIVED_THREAD, STAFF_CHANNEL)}
+
+    def get_channel_or_thread(self, channel_id):
+        return self.cached.get(channel_id)
+
+    async def fetch_channel(self, channel_id):
+        if channel_id not in self.remote:
+            raise discord.NotFound(types.SimpleNamespace(status=404, reason="Not Found"), "unknown")
+        return self.remote[channel_id]
+
+
+@pytest.fixture
+def ignoring_staff(log_channel, monkeypatch):
+    guild = FakeGuild()
+    monkeypatch.setattr(main.bot, "get_guild", lambda gid: guild if gid == GUILD else None)
+    monkeypatch.setattr(main, "MESSAGE_LOG_IGNORE_CATEGORY_IDS", {STAFF_CATEGORY})
+    return log_channel
+
+
+@pytest.mark.parametrize("channel_id", [STAFF_CHANNEL, 9001, ARCHIVED_THREAD, 404])
+async def test_internal_channels_their_threads_and_unknown_channels_post_nothing(ignoring_staff, pool, channel_id):
+    await log(pool, 1, content="internal", channel_id=channel_id)
+    await log(pool, 2, content="old", channel_id=channel_id)
+    await main.on_raw_message_delete(delete_event(1, channel_id=channel_id))
+    await main.on_raw_message_edit(edit_event(2, "new", channel_id=channel_id))
+    assert ignoring_staff.sent == []
+    # The message log itself still records them
+    assert (await db.get_message(pool, 1))["deleted_at"] is not None
+
+
+@pytest.mark.parametrize("channel_id", [GENERAL, 9002])
+async def test_member_channels_and_their_threads_still_post(ignoring_staff, pool, channel_id):
+    await log(pool, 1, content="member text", channel_id=channel_id)
+    await main.on_raw_message_delete(delete_event(1, channel_id=channel_id))
+    [embed] = posted(ignoring_staff)
+    assert "member text" in embed.description
+
+
+async def test_a_listed_channel_id_is_left_out_too(ignoring_staff, pool, monkeypatch):
+    monkeypatch.setattr(main, "MESSAGE_LOG_IGNORE_CATEGORY_IDS", {GENERAL})
+    await log(pool, 1, channel_id=GENERAL)
+    await main.on_raw_message_delete(delete_event(1, channel_id=GENERAL))
+    assert ignoring_staff.sent == []
+
+
+def test_id_set_from_env(monkeypatch):
+    monkeypatch.delenv("MESSAGE_LOG_IGNORE_CATEGORY_IDS", raising=False)
+    assert main.id_set_from_env("MESSAGE_LOG_IGNORE_CATEGORY_IDS") == set()
+    monkeypatch.setenv("MESSAGE_LOG_IGNORE_CATEGORY_IDS", " 12, 34 ,,staff ")
+    assert main.id_set_from_env("MESSAGE_LOG_IGNORE_CATEGORY_IDS") == {12, 34}

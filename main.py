@@ -44,6 +44,25 @@ def channel_id_from_env(name):
 # The moderators' log channel (#logs), where message edits and deletions are posted. Unset means off.
 MESSAGE_LOG_CHANNEL_ID = channel_id_from_env('MESSAGE_LOG_CHANNEL_ID')
 
+def id_set_from_env(name):
+    """Comma-separated IDs from the environment. A value that isn't a number is left out (with a
+    warning) rather than stopping the bot."""
+    ids = set()
+    for part in (os.getenv(name) or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.add(int(part))
+        except ValueError:
+            print(f"Warning: {name} has an entry that isn't an ID ({len(part)} characters); ignoring it.")
+    return ids
+
+# Categories (or single channels) whose edits and deletions are never posted to the log channel:
+# internal groups such as staff and national leads, where nothing needs moderating. A thread
+# counts as being in its parent channel's category.
+MESSAGE_LOG_IGNORE_CATEGORY_IDS = id_set_from_env('MESSAGE_LOG_IGNORE_CATEGORY_IDS')
+
 ALLOWED_EXPORT_ROLE_ID = 1409324452545822793
 
 # Developer / Production Environment Mode
@@ -962,9 +981,43 @@ def row_from_cached(message):
         "created_at": message.created_at,
     }
 
+async def channel_or_thread(guild, channel_id):
+    """The channel or thread, from the cache or else from Discord (archived threads often aren't
+    cached), or None if it can't be found."""
+    channel = guild.get_channel_or_thread(channel_id)
+    if channel is not None:
+        return channel
+    try:
+        return await guild.fetch_channel(channel_id)
+    except Exception as e:
+        print(f"Error looking up channel {channel_id}: {e}")
+        return None
+
+async def is_ignored_channel(guild_id, channel_id):
+    """Whether channel_id, its parent channel (for a thread) or its category is in
+    MESSAGE_LOG_IGNORE_CATEGORY_IDS. A channel that can't be looked up counts as ignored, so a
+    lookup failure never posts an internal channel's messages."""
+    if not MESSAGE_LOG_IGNORE_CATEGORY_IDS:
+        return False
+    if channel_id in MESSAGE_LOG_IGNORE_CATEGORY_IDS:
+        return True
+    guild = bot.get_guild(guild_id)
+    channel = await channel_or_thread(guild, channel_id) if guild else None
+    if channel is None:
+        return True
+    ids = {getattr(channel, "category_id", None)}
+    if isinstance(channel, discord.Thread):
+        parent = await channel_or_thread(guild, channel.parent_id)
+        if parent is None:
+            return True
+        ids |= {parent.id, parent.category_id}
+    return bool(ids & MESSAGE_LOG_IGNORE_CATEGORY_IDS)
+
 async def post_to_log_channel(guild_id, channel_id, embeds):
     channel = log_channel_for(guild_id, channel_id)
     if channel is None or not embeds:
+        return
+    if await is_ignored_channel(guild_id, channel_id):
         return
     for group in modlog.chunk(embeds):
         try:
