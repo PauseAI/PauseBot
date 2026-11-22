@@ -1,0 +1,365 @@
+import io
+import json
+import urllib.error
+import pytest
+
+from jobs import country_regions as cr
+from jobs.country_regions_table import COUNTRIES, REGIONS, region_of
+from tests.fake_discord import FakeDiscord, load_fixture
+
+# The channels in the live 🌍 COUNTRIES and 🌎 COUNTRIES+ categories on 22 Nov 2026
+LIVE_COUNTRY_CHANNELS = (
+    "argentina armenia australia austria belgium brazil cameroon canada china colombia croatia czechia "
+    "denmark european-union finland france germany honduras hungary iceland india indonesia ireland israel "
+    "italy japan greece nepal netherlands new-zealand nigeria norway peru poland portugal philippines "
+    "puerto-rico romania serbia singapore spain south-africa south-korea sweden switzerland taiwan ukraine "
+    "united-states united-kingdom albania angola cuba ghana kazakhstan turkey georgia uganda uruguay mexico "
+    "malaysia saudi-arabia senegal"
+).split()
+
+
+def run(fake, *args, tmp_path):
+    lines = []
+    code = cr.main([*args, "--guild", fake.guild_id, "--backup", str(tmp_path / "backup.json"),
+                    "--onboarding-file", str(tmp_path / "onboarding.json")], http=fake, out=lines.append)
+    return code, "\n".join(lines)
+
+
+def apply(fake, tmp_path):
+    code, output = run(fake, "--apply", tmp_path=tmp_path)
+    assert code == 0, output
+    return output
+
+
+# ---- The region table ----
+
+def test_each_country_is_in_exactly_one_region():
+    seen = {}
+    for region, countries in COUNTRIES.items():
+        assert region in REGIONS
+        for country in countries:
+            assert country not in seen, f"{country} is in {seen.get(country)} and {region}"
+            seen[country] = region
+
+
+@pytest.mark.parametrize("country, region", [
+    ("Russia", "Europe"), ("Georgia", "Europe"), ("Armenia", "Europe"), ("Azerbaijan", "Europe"),
+    ("Egypt", "Africa"), ("Morocco", "Africa"), ("Algeria", "Africa"), ("Tunisia", "Africa"),
+    ("Turkey", "Middle East"), ("Iran", "Middle East"), ("United Arab Emirates", "Middle East"),
+    ("Kazakhstan", "Asia-Pacific"), ("Australia", "Asia-Pacific"), ("Puerto Rico", "Americas"),
+    ("Dominican Republic", "Americas"), ("DR Congo", "Africa"), ("Ivory Coast", "Africa"),
+    ("California", None), ("Dominian Republic", None),
+])
+def test_region_mapping(country, region):
+    assert region_of(country) == region
+
+
+def test_every_live_country_channel_has_a_region():
+    for name in LIVE_COUNTRY_CHANNELS:
+        assert name in cr.EXTRA_CHANNELS or region_of(cr.COUNTRY_BY_SLUG.get(name, "")), name
+
+
+def test_flags_come_from_iso_codes():
+    assert cr.flag("KE") == "🇰🇪"
+
+
+# ---- Dry run ----
+
+def test_dry_run_changes_nothing_and_lists_every_change(tmp_path):
+    fake = FakeDiscord()
+    code, output = run(fake, tmp_path=tmp_path)
+
+    assert code == 0, output
+    assert fake.writes == []
+    assert not (tmp_path / "backup.json").exists()
+    for expected in ["Rename role 'Dominian Republic' to 'Dominican Republic'", "Create category 🌍 EUROPE",
+                     "Create #kenya in 🌍 AFRICA", "Create #russia in 🌍 EUROPE", "Create #dominican-republic in",
+                     "Create #other-middle-east in 🌍 MIDDLE EAST", "Move #france into 🌍 EUROPE, keeping its own",
+                     "Move #argentina into 🌎 AMERICAS, syncing", "Lock #request-a-country-🌍",
+                     "Post welcome in #kenya", "Delete the empty category 🌍 COUNTRIES",
+                     "Delete the empty category 🌎 COUNTRIES+", "Summary (dry run: nothing was changed)"]:
+        assert expected in output, expected
+    # Differences from the 21 Nov list are shown
+    assert "Not in the 21 Nov list, created anyway: tunisia" in output
+    assert "In the 21 Nov list but not created now:" in output
+
+
+def test_dry_run_with_an_unmapped_channel_stops_before_anything(tmp_path):
+    data = load_fixture()
+    countries = next(c for c in data["channels"] if c["name"] == "🌍 COUNTRIES")
+    data["channels"].append({"id": "5999", "name": "atlantis", "type": 0, "position": 20,
+                             "parent_id": countries["id"], "permission_overwrites": []})
+    fake = FakeDiscord(data)
+    code, output = run(fake, "--apply", tmp_path=tmp_path)
+
+    assert code == 1
+    assert "#atlantis in 🌍 COUNTRIES isn't in the region table" in output
+    assert fake.writes == []
+    assert not (tmp_path / "backup.json").exists()
+
+
+# ---- Apply ----
+
+def test_apply_builds_the_regional_layout(tmp_path):
+    fake = FakeDiscord()
+    original = load_fixture()
+    apply(fake, tmp_path)
+
+    names = [c["name"] for c in sorted((c for c in fake.channels.values() if c["type"] == 4),
+                                       key=lambda c: c["position"])]
+    assert names == ["📌 INFO", "🌍 EUROPE", "🌎 AMERICAS", "🌍 AFRICA", "🌍 MIDDLE EAST", "🌏 ASIA-PACIFIC",
+                     "📚 SERVER GUIDE RESOURCES"]
+    assert fake.children("🌍 EUROPE") == ["european-union", "france", "germany", "russia", "other-europe"]
+    assert fake.children("🌎 AMERICAS") == ["argentina", "cuba", "dominican-republic", "united-states",
+                                            "other-americas"]
+    # Tunisia: the only member is a National Leader. Ethiopia: no members, no channel: role only
+    assert fake.children("🌍 AFRICA") == ["kenya", "tunisia", "other-africa"]
+    assert fake.children("🌍 MIDDLE EAST") == ["turkey", "other-middle-east"]
+    assert fake.children("🌏 ASIA-PACIFIC") == ["australia", "japan", "other-asia-pacific"]
+    assert fake.children("📚 SERVER GUIDE RESOURCES") == ["faq", "request-a-country-🌍"]
+    assert not any(c["name"] in ("california", "ethiopia") for c in fake.channels.values())
+
+    # Role renamed, not recreated
+    renamed = next(r for r in load_fixture()["roles"] if r["name"] == "Dominian Republic")
+    assert fake.roles[renamed["id"]]["name"] == "Dominican Republic"
+
+    # Regional categories copy COUNTRIES's overwrites, without the Paused (Wick) deny
+    paused = next(r for r in fake.roles.values() if r["name"] == "Paused (Wick)")
+    europe = fake.channel("🌍 EUROPE")
+    old = next(c for c in original["channels"] if c["name"] == "🌍 COUNTRIES")
+    assert {o["id"] for o in europe["permission_overwrites"]} == \
+        {o["id"] for o in old["permission_overwrites"]} - {paused["id"]}
+
+    # Moved and new channels are synced; france and germany keep exactly what they had
+    for name in ["argentina", "australia", "european-union", "cuba", "kenya", "other-europe", "turkey"]:
+        channel = fake.channel(name)
+        parent = fake.channels[channel["parent_id"]]
+        assert cr.overwrites_key(channel["permission_overwrites"]) == \
+            cr.overwrites_key(parent["permission_overwrites"]), name
+    for name in ["france", "germany"]:
+        before = next(c for c in original["channels"] if c["name"] == name)
+        assert fake.channel(name)["permission_overwrites"] == before["permission_overwrites"]
+    # Moving keeps IDs (and so history)
+    assert fake.channel("argentina")["id"] == next(c["id"] for c in original["channels"] if c["name"] == "argentina")
+
+    assert fake.channel("other-europe")["topic"] == cr.OTHER_TOPIC
+    assert "🌍 COUNTRIES" not in {c["name"] for c in fake.channels.values()}
+
+    # request-a-country: notice posted, then @everyone can't send
+    request = fake.channel("request-a-country-🌍")
+    everyone = next(o for o in request["permission_overwrites"] if o["id"] == fake.guild_id)
+    assert int(everyone["deny"]) & cr.SEND_MESSAGES
+    [notice] = fake.messages[request["id"]]
+    assert notice["content"].startswith(cr.REQUEST_NOTICE_START)
+    assert f"<#{fake.channel('other-africa')['id']}>" in notice["content"]
+    assert notice["allowed_mentions"] == {"parse": []}
+    deleted = [w for w in fake.writes if w[0] == "DELETE"]
+    assert len(deleted) == 2  # Only the two emptied categories
+
+
+def test_welcomes_only_in_new_country_channels_mentioning_only_their_role(tmp_path):
+    fake = FakeDiscord()
+    apply(fake, tmp_path)
+
+    welcomed = {fake.channels[cid]["name"]: msgs for cid, msgs in fake.messages.items()
+                if not fake.channels[cid]["name"].startswith("request")}
+    assert set(welcomed) == {"kenya", "russia", "dominican-republic", "tunisia"}
+    kenya = next(r for r in fake.roles.values() if r["name"] == "Kenya")
+    [message] = welcomed["kenya"]
+    assert message["content"].startswith(f"<@&{kenya['id']}>: this is your channel now")
+    assert message["allowed_mentions"] == {"parse": [], "roles": [kenya["id"]]}
+    # turkey has never had a message but isn't new, so it gets no welcome
+    assert fake.channel("turkey")["id"] not in fake.messages
+
+
+def test_apply_saves_a_backup_first(tmp_path):
+    fake = FakeDiscord()
+    apply(fake, tmp_path)
+
+    backup = json.loads((tmp_path / "backup.json").read_text())
+    assert {c["name"] for c in backup["channels"]} == {c["name"] for c in load_fixture()["channels"]}
+    assert backup["onboarding"] == load_fixture()["onboarding"]
+
+
+def test_rerun_changes_nothing(tmp_path):
+    fake = FakeDiscord()
+    apply(fake, tmp_path)
+    writes = len(fake.writes)
+
+    output = apply(fake, tmp_path)
+    assert len(fake.writes) == writes, fake.writes[writes:]
+    assert "No changes needed" in output
+    # The first backup is kept; the rerun's goes beside it
+    assert len(list(tmp_path.glob("backup*.json"))) == 2
+
+
+@pytest.mark.parametrize("fail_on", [1, 3, 8, 15, 25, 32])
+def test_rerun_after_a_partial_failure_finishes_the_job(tmp_path, fail_on):
+    clean, clean_dir = FakeDiscord(), tmp_path / "clean"
+    clean_dir.mkdir()
+    apply(clean, clean_dir)
+
+    fake = FakeDiscord(fail_on_write=fail_on)
+    code, output = run(fake, "--apply", tmp_path=tmp_path)
+    assert code == 1 and "injected failure" in output
+    fake.fail_on_write = None
+    apply(fake, tmp_path)
+
+    assert fake.structure() == clean.structure()
+    # Each welcome posted once, even if the failure came between creating a channel and welcoming it
+    assert sorted(len(m) for m in fake.messages.values()) == sorted(len(m) for m in clean.messages.values())
+
+
+# ---- Onboarding ----
+
+def onboarding_after_apply(tmp_path, *extra):
+    fake = FakeDiscord()
+    apply(fake, tmp_path)
+    before = json.loads(json.dumps(fake.onboarding))
+    code, output = run(fake, "--onboarding", *extra, tmp_path=tmp_path)
+    assert code == 0, output
+    return fake, before, json.loads((tmp_path / "onboarding.json").read_text()), output
+
+
+def test_onboarding_is_only_written_to_a_file_by_default(tmp_path):
+    fake, before, payload, output = onboarding_after_apply(tmp_path)
+
+    assert not any(w[0] == "PUT" and w[1].endswith("/onboarding") for w in fake.writes)
+    assert fake.onboarding == before
+    assert "Remove question 'Which country are you in?'" in output
+    assert "Remove question 'More countries'" in output
+    assert "Question 'Where are you? Africa'" in output
+
+
+def test_onboarding_replaces_country_questions_and_carries_the_rest_over(tmp_path):
+    fake, before, payload, output = onboarding_after_apply(tmp_path)
+
+    titles = [p["title"] for p in payload["prompts"]]
+    assert titles == ["What do you want to help with?"] + [f"Where are you? {r}" for r in REGIONS] + \
+        ["How did you hear about us?"]
+    assert payload["default_channel_ids"] == before["default_channel_ids"]
+    assert payload["enabled"] is True and payload["mode"] == 1
+
+    interest = payload["prompts"][0]
+    original = before["prompts"][0]
+    assert {k: interest[k] for k in ("id", "type", "single_select", "required", "in_onboarding")} == \
+        {k: original[k] for k in ("id", "type", "single_select", "required", "in_onboarding")}
+    assert interest["options"][0] == {"id": "8001", "title": "Protesting", "description": None,
+                                      "channel_ids": original["options"][0]["channel_ids"], "role_ids": [],
+                                      "emoji_id": "6100", "emoji_name": "protest", "emoji_animated": False}
+    assert interest["options"][1]["emoji_name"] == "✍️" and "emoji_id" not in interest["options"][1]
+    assert payload["prompts"][-1]["options"] == [{"id": "8010", "title": "A friend", "description": None,
+                                                  "channel_ids": [], "role_ids": []}]
+
+
+def test_onboarding_regional_options(tmp_path):
+    fake, before, payload, output = onboarding_after_apply(tmp_path)
+    africa = next(p for p in payload["prompts"] if p["title"] == "Where are you? Africa")
+    role = {r["name"]: r["id"] for r in fake.roles.values()}
+
+    assert africa["single_select"] is False and africa["required"] is False
+    by_title = {o["title"]: o for o in africa["options"]}
+    assert list(by_title) == ["Ethiopia", "Kenya", "Tunisia", "Somewhere else in Africa"]
+    assert by_title["Kenya"]["role_ids"] == [role["Kenya"]]
+    assert by_title["Kenya"]["channel_ids"] == [fake.channel("kenya")["id"]]
+    assert by_title["Kenya"]["id"] == "8005"  # The old option's ID and emoji carry over
+    assert by_title["Kenya"]["emoji_name"] == "🇰🇪"
+    # A role with no channel: the role plus other-africa
+    assert by_title["Ethiopia"]["role_ids"] == [role["Ethiopia"]]
+    assert by_title["Ethiopia"]["channel_ids"] == [fake.channel("other-africa")["id"]]
+    assert by_title["Ethiopia"]["emoji_name"] == "🇪🇹"
+    assert by_title["Somewhere else in Africa"]["role_ids"] == []
+    assert by_title["Somewhere else in Africa"]["channel_ids"] == [fake.channel("other-africa")["id"]]
+    americas = next(p for p in payload["prompts"] if p["title"] == "Where are you? Americas")
+    assert [o["title"] for o in americas["options"]] == [
+        "Argentina", "Cuba", "Dominican Republic", "United States", "Somewhere else in Americas"]
+    ids = [o["id"] for p in payload["prompts"] for o in p["options"]] + [p["id"] for p in payload["prompts"]]
+    assert len(ids) == len(set(ids))
+
+
+def test_onboarding_apply_sends_it_and_a_rerun_keeps_the_same_ids(tmp_path):
+    fake, before, payload, output = onboarding_after_apply(tmp_path, "--apply-onboarding")
+
+    [put] = [w for w in fake.writes if w[0] == "PUT" and w[1].endswith("/onboarding")]
+    assert put[2] == payload
+    code, output = run(fake, "--onboarding", "--apply-onboarding", tmp_path=tmp_path)
+    assert code == 0, output
+    second = [w for w in fake.writes if w[0] == "PUT" and w[1].endswith("/onboarding")][-1][2]
+    assert second == payload
+
+
+def test_onboarding_before_the_restructure_stops(tmp_path):
+    fake = FakeDiscord()
+    code, output = run(fake, "--onboarding", "--apply-onboarding", tmp_path=tmp_path)
+    assert code == 1 and "run --apply before --onboarding" in output
+    assert fake.writes == []
+
+
+# ---- Rollback ----
+
+def test_restore_layout_puts_channels_back(tmp_path):
+    fake = FakeDiscord()
+    original = load_fixture()
+    apply(fake, tmp_path)
+
+    code, output = run(fake, "--restore-layout", str(tmp_path / "backup.json"), "--apply", tmp_path=tmp_path)
+    assert code == 0, output
+    for before in original["channels"]:
+        if before["type"] == 0 and before.get("parent_id") in {c["id"] for c in original["channels"]
+                                                               if "COUNTRIES" in c["name"]}:
+            after = fake.channels[before["id"]]
+            parent = next(c for c in original["channels"] if c["id"] == before["parent_id"])
+            assert fake.channels[after["parent_id"]]["name"] == parent["name"], before["name"]
+            assert cr.overwrites_key(after["permission_overwrites"]) == \
+                cr.overwrites_key(before["permission_overwrites"]), before["name"]
+    assert fake.children("🌍 COUNTRIES")[0] == "request-a-country-🌍"
+
+
+def test_restore_onboarding(tmp_path):
+    fake, before, payload, output = onboarding_after_apply(tmp_path, "--apply-onboarding")
+    code, output = run(fake, "--restore-onboarding", str(tmp_path / "backup.json"), "--apply", tmp_path=tmp_path)
+    assert code == 0, output
+    assert fake.onboarding == before
+
+
+# ---- HTTP ----
+
+class Response(io.BytesIO):
+    def __init__(self, body, headers=None):
+        super().__init__(json.dumps(body).encode())
+        self.headers = headers or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_http_waits_out_rate_limits_and_never_shows_the_token(monkeypatch):
+    calls, sleeps = [], []
+
+    def urlopen(request, timeout):
+        calls.append(request)
+        if len(calls) == 1:
+            raise urllib.error.HTTPError(request.full_url, 429, "Too Many", {}, io.BytesIO(b'{"retry_after": 1.5}'))
+        if len(calls) == 2:
+            return Response({"ok": True}, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset-After": "2"})
+        raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", {}, io.BytesIO(b'{"code": 50013}'))
+
+    monkeypatch.setattr(cr.urllib.request, "urlopen", urlopen)
+    http = cr.DiscordHTTP("secret-token", sleep=sleeps.append)
+
+    assert http.request("POST", "/x", {"a": 1}) == {"ok": True}
+    assert sleeps == [2.0, 2.0]
+    assert calls[0].get_header("Authorization") == "Bot secret-token"
+    assert calls[0].get_header("X-audit-log-reason") == cr.AUDIT_REASON
+    with pytest.raises(cr.DiscordError) as error:
+        http.request("GET", "/y")
+    assert "secret-token" not in str(error.value) and "50013" in str(error.value)
+
+
+def test_missing_token(tmp_path):
+    lines = []
+    assert cr.main([], out=lines.append, env={}) == 2
+    assert "DISCORD_TOKEN" in lines[0]

@@ -1,0 +1,1036 @@
+{
+ "_about": "Synthetic server shaped like the PauseAI Discord's country categories on 21 Nov 2026 (Discord REST API JSON). No real members.",
+ "guild_id": "1000",
+ "bot_user_id": "777",
+ "roles": [
+  {
+   "id": "1000",
+   "name": "@everyone",
+   "permissions": "0",
+   "position": 0,
+   "mentionable": false,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  },
+  {
+   "id": "2001",
+   "name": "Argentina",
+   "permissions": "0",
+   "position": 10,
+   "mentionable": false,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  },
+  {
+   "id": "2002",
+   "name": "Australia",
+   "permissions": "0",
+   "position": 11,
+   "mentionable": false,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  },
+  {
+   "id": "2003",
+   "name": "California",
+   "permissions": "0",
+   "position": 12,
+   "mentionable": false,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  },
+  {
+   "id": "2004",
+   "name": "Cuba",
+   "permissions": "0",
+   "position": 13,
+   "mentionable": false,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  },
+  {
+   "id": "2005",
+   "name": "Dominian Republic",
+   "permissions": "0",
+   "position": 14,
+   "mentionable": false,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  },
+  {
+   "id": "2006",
+   "name": "Ethiopia",
+   "permissions": "0",
+   "position": 15,
+   "mentionable": false,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  },
+  {
+   "id": "2007",
+   "name": "France",
+   "permissions": "0",
+   "position": 16,
+   "mentionable": false,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  },
+  {
+   "id": "2008",
+   "name": "Germany",
+   "permissions": "0",
+   "position": 17,
+   "mentionable": false,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  },
+  {
+   "id": "2009",
+   "name": "Japan",
+   "permissions": "0",
+   "position": 18,
+   "mentionable": false,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  },
+  {
+   "id": "2010",
+   "name": "Kenya",
+   "permissions": "0",
+   "position": 19,
+   "mentionable": false,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  },
+  {
+   "id": "2011",
+   "name": "Russia",
+   "permissions": "0",
+   "position": 20,
+   "mentionable": false,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  },
+  {
+   "id": "2012",
+   "name": "Turkey",
+   "permissions": "0",
+   "position": 21,
+   "mentionable": false,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  },
+  {
+   "id": "2013",
+   "name": "United States",
+   "permissions": "0",
+   "position": 22,
+   "mentionable": false,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  },
+  {
+   "id": "2014",
+   "name": "Tunisia",
+   "permissions": "0",
+   "position": 23,
+   "mentionable": false,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  },
+  {
+   "id": "2015",
+   "name": "National Leader",
+   "permissions": "0",
+   "position": 40,
+   "mentionable": true,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  },
+  {
+   "id": "2016",
+   "name": "Paused (Wick)",
+   "permissions": "0",
+   "position": 41,
+   "mentionable": false,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  },
+  {
+   "id": "2017",
+   "name": "Server Manager",
+   "permissions": "8",
+   "position": 42,
+   "mentionable": false,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  },
+  {
+   "id": "2018",
+   "name": "PauseBot",
+   "permissions": "268566576",
+   "position": 43,
+   "mentionable": false,
+   "managed": false,
+   "color": 0,
+   "hoist": false
+  }
+ ],
+ "channels": [
+  {
+   "id": "5001",
+   "name": "📌 INFO",
+   "type": 4,
+   "position": 0,
+   "parent_id": null,
+   "permission_overwrites": [],
+   "flags": 0,
+   "guild_id": "1000"
+  },
+  {
+   "id": "5002",
+   "name": "welcome",
+   "type": 0,
+   "position": 0,
+   "parent_id": "5001",
+   "permission_overwrites": [],
+   "flags": 0,
+   "guild_id": "1000",
+   "last_message_id": "9000",
+   "topic": null
+  },
+  {
+   "id": "5003",
+   "name": "🌍 COUNTRIES",
+   "type": 4,
+   "position": 1,
+   "parent_id": null,
+   "permission_overwrites": [
+    {
+     "id": "2016",
+     "type": 0,
+     "allow": "0",
+     "deny": "377957125121"
+    },
+    {
+     "id": "2017",
+     "type": 0,
+     "allow": "1024",
+     "deny": "0"
+    }
+   ],
+   "flags": 0,
+   "guild_id": "1000"
+  },
+  {
+   "id": "5004",
+   "name": "🌎 COUNTRIES+",
+   "type": 4,
+   "position": 2,
+   "parent_id": null,
+   "permission_overwrites": [
+    {
+     "id": "2016",
+     "type": 0,
+     "allow": "0",
+     "deny": "377957125121"
+    },
+    {
+     "id": "2017",
+     "type": 0,
+     "allow": "1024",
+     "deny": "0"
+    }
+   ],
+   "flags": 0,
+   "guild_id": "1000"
+  },
+  {
+   "id": "5005",
+   "name": "📚 SERVER GUIDE RESOURCES",
+   "type": 4,
+   "position": 3,
+   "parent_id": null,
+   "permission_overwrites": [],
+   "flags": 0,
+   "guild_id": "1000"
+  },
+  {
+   "id": "5006",
+   "name": "faq",
+   "type": 0,
+   "position": 0,
+   "parent_id": "5005",
+   "permission_overwrites": [],
+   "flags": 0,
+   "guild_id": "1000",
+   "last_message_id": "9000",
+   "topic": null
+  },
+  {
+   "id": "5007",
+   "name": "request-a-country-🌍",
+   "type": 0,
+   "position": 0,
+   "parent_id": "5003",
+   "permission_overwrites": [
+    {
+     "id": "2016",
+     "type": 0,
+     "allow": "0",
+     "deny": "377957125121"
+    },
+    {
+     "id": "2017",
+     "type": 0,
+     "allow": "1024",
+     "deny": "0"
+    }
+   ],
+   "flags": 0,
+   "guild_id": "1000",
+   "last_message_id": "9000",
+   "topic": null
+  },
+  {
+   "id": "5008",
+   "name": "argentina",
+   "type": 0,
+   "position": 1,
+   "parent_id": "5003",
+   "permission_overwrites": [
+    {
+     "id": "2016",
+     "type": 0,
+     "allow": "0",
+     "deny": "377957125121"
+    },
+    {
+     "id": "2017",
+     "type": 0,
+     "allow": "1024",
+     "deny": "0"
+    }
+   ],
+   "flags": 0,
+   "guild_id": "1000",
+   "last_message_id": "9000",
+   "topic": null
+  },
+  {
+   "id": "5009",
+   "name": "australia",
+   "type": 0,
+   "position": 2,
+   "parent_id": "5003",
+   "permission_overwrites": [
+    {
+     "id": "2016",
+     "type": 0,
+     "allow": "0",
+     "deny": "377957125121"
+    },
+    {
+     "id": "2017",
+     "type": 0,
+     "allow": "1024",
+     "deny": "0"
+    },
+    {
+     "id": "2999",
+     "type": 0,
+     "allow": "0",
+     "deny": "0"
+    }
+   ],
+   "flags": 0,
+   "guild_id": "1000",
+   "last_message_id": "9000",
+   "topic": null
+  },
+  {
+   "id": "5010",
+   "name": "european-union",
+   "type": 0,
+   "position": 3,
+   "parent_id": "5003",
+   "permission_overwrites": [
+    {
+     "id": "2016",
+     "type": 0,
+     "allow": "0",
+     "deny": "377957125121"
+    },
+    {
+     "id": "2017",
+     "type": 0,
+     "allow": "1024",
+     "deny": "0"
+    }
+   ],
+   "flags": 0,
+   "guild_id": "1000",
+   "last_message_id": "9000",
+   "topic": null
+  },
+  {
+   "id": "5011",
+   "name": "france",
+   "type": 0,
+   "position": 4,
+   "parent_id": "5003",
+   "permission_overwrites": [
+    {
+     "id": "1000",
+     "type": 0,
+     "allow": "0",
+     "deny": "2048"
+    },
+    {
+     "id": "2016",
+     "type": 0,
+     "allow": "0",
+     "deny": "377957125121"
+    },
+    {
+     "id": "2017",
+     "type": 0,
+     "allow": "1024",
+     "deny": "0"
+    }
+   ],
+   "flags": 0,
+   "guild_id": "1000",
+   "last_message_id": "9000",
+   "topic": null
+  },
+  {
+   "id": "5012",
+   "name": "germany",
+   "type": 0,
+   "position": 5,
+   "parent_id": "5003",
+   "permission_overwrites": [
+    {
+     "id": "1000",
+     "type": 0,
+     "allow": "0",
+     "deny": "34359740416"
+    },
+    {
+     "id": "2016",
+     "type": 0,
+     "allow": "0",
+     "deny": "377957125121"
+    },
+    {
+     "id": "2017",
+     "type": 0,
+     "allow": "34359739392",
+     "deny": "0"
+    }
+   ],
+   "flags": 0,
+   "guild_id": "1000",
+   "last_message_id": "9000",
+   "topic": null
+  },
+  {
+   "id": "5013",
+   "name": "united-states",
+   "type": 0,
+   "position": 6,
+   "parent_id": "5003",
+   "permission_overwrites": [
+    {
+     "id": "1000",
+     "type": 0,
+     "allow": "0",
+     "deny": "0"
+    },
+    {
+     "id": "2016",
+     "type": 0,
+     "allow": "0",
+     "deny": "377957125121"
+    },
+    {
+     "id": "2017",
+     "type": 0,
+     "allow": "1024",
+     "deny": "0"
+    }
+   ],
+   "flags": 0,
+   "guild_id": "1000",
+   "last_message_id": "9000",
+   "topic": null
+  },
+  {
+   "id": "5014",
+   "name": "cuba",
+   "type": 0,
+   "position": 7,
+   "parent_id": "5003",
+   "permission_overwrites": [
+    {
+     "id": "2016",
+     "type": 0,
+     "allow": "0",
+     "deny": "377957125121"
+    },
+    {
+     "id": "2017",
+     "type": 0,
+     "allow": "1024",
+     "deny": "0"
+    }
+   ],
+   "flags": 0,
+   "guild_id": "1000",
+   "last_message_id": "9000",
+   "topic": null
+  },
+  {
+   "id": "5015",
+   "name": "japan",
+   "type": 0,
+   "position": 8,
+   "parent_id": "5003",
+   "permission_overwrites": [
+    {
+     "id": "2016",
+     "type": 0,
+     "allow": "0",
+     "deny": "377957125121"
+    },
+    {
+     "id": "2017",
+     "type": 0,
+     "allow": "1024",
+     "deny": "0"
+    }
+   ],
+   "flags": 0,
+   "guild_id": "1000",
+   "last_message_id": "9000",
+   "topic": null
+  },
+  {
+   "id": "5016",
+   "name": "turkey",
+   "type": 0,
+   "position": 0,
+   "parent_id": "5004",
+   "permission_overwrites": [
+    {
+     "id": "2016",
+     "type": 0,
+     "allow": "0",
+     "deny": "377957125121"
+    },
+    {
+     "id": "2017",
+     "type": 0,
+     "allow": "1024",
+     "deny": "0"
+    }
+   ],
+   "flags": 0,
+   "guild_id": "1000",
+   "last_message_id": null,
+   "topic": null
+  }
+ ],
+ "members": [
+  {
+   "user": {
+    "id": "100001"
+   },
+   "roles": [
+    "2001"
+   ]
+  },
+  {
+   "user": {
+    "id": "100002"
+   },
+   "roles": [
+    "2001"
+   ]
+  },
+  {
+   "user": {
+    "id": "100003"
+   },
+   "roles": [
+    "2002"
+   ]
+  },
+  {
+   "user": {
+    "id": "100004"
+   },
+   "roles": [
+    "2002"
+   ]
+  },
+  {
+   "user": {
+    "id": "100005"
+   },
+   "roles": [
+    "2002"
+   ]
+  },
+  {
+   "user": {
+    "id": "100006"
+   },
+   "roles": [
+    "2003"
+   ]
+  },
+  {
+   "user": {
+    "id": "100007"
+   },
+   "roles": [
+    "2003"
+   ]
+  },
+  {
+   "user": {
+    "id": "100008"
+   },
+   "roles": [
+    "2003"
+   ]
+  },
+  {
+   "user": {
+    "id": "100009"
+   },
+   "roles": [
+    "2003"
+   ]
+  },
+  {
+   "user": {
+    "id": "100010"
+   },
+   "roles": [
+    "2005"
+   ]
+  },
+  {
+   "user": {
+    "id": "100011"
+   },
+   "roles": [
+    "2005"
+   ]
+  },
+  {
+   "user": {
+    "id": "100012"
+   },
+   "roles": [
+    "2007"
+   ]
+  },
+  {
+   "user": {
+    "id": "100013"
+   },
+   "roles": [
+    "2007"
+   ]
+  },
+  {
+   "user": {
+    "id": "100014"
+   },
+   "roles": [
+    "2007"
+   ]
+  },
+  {
+   "user": {
+    "id": "100015"
+   },
+   "roles": [
+    "2007"
+   ]
+  },
+  {
+   "user": {
+    "id": "100016"
+   },
+   "roles": [
+    "2007"
+   ]
+  },
+  {
+   "user": {
+    "id": "100017"
+   },
+   "roles": [
+    "2008"
+   ]
+  },
+  {
+   "user": {
+    "id": "100018"
+   },
+   "roles": [
+    "2008"
+   ]
+  },
+  {
+   "user": {
+    "id": "100019"
+   },
+   "roles": [
+    "2008"
+   ]
+  },
+  {
+   "user": {
+    "id": "100020"
+   },
+   "roles": [
+    "2008"
+   ]
+  },
+  {
+   "user": {
+    "id": "100021"
+   },
+   "roles": [
+    "2008"
+   ]
+  },
+  {
+   "user": {
+    "id": "100022"
+   },
+   "roles": [
+    "2009"
+   ]
+  },
+  {
+   "user": {
+    "id": "100023"
+   },
+   "roles": [
+    "2010"
+   ]
+  },
+  {
+   "user": {
+    "id": "100024"
+   },
+   "roles": [
+    "2010"
+   ]
+  },
+  {
+   "user": {
+    "id": "100025"
+   },
+   "roles": [
+    "2010"
+   ]
+  },
+  {
+   "user": {
+    "id": "100026"
+   },
+   "roles": [
+    "2011"
+   ]
+  },
+  {
+   "user": {
+    "id": "100027"
+   },
+   "roles": [
+    "2011"
+   ]
+  },
+  {
+   "user": {
+    "id": "100028"
+   },
+   "roles": [
+    "2012"
+   ]
+  },
+  {
+   "user": {
+    "id": "100029"
+   },
+   "roles": [
+    "2013"
+   ]
+  },
+  {
+   "user": {
+    "id": "100030"
+   },
+   "roles": [
+    "2013"
+   ]
+  },
+  {
+   "user": {
+    "id": "100031"
+   },
+   "roles": [
+    "2013"
+   ]
+  },
+  {
+   "user": {
+    "id": "100032"
+   },
+   "roles": [
+    "2013"
+   ]
+  },
+  {
+   "user": {
+    "id": "100033"
+   },
+   "roles": [
+    "2013"
+   ]
+  },
+  {
+   "user": {
+    "id": "100034"
+   },
+   "roles": [
+    "2013"
+   ]
+  },
+  {
+   "user": {
+    "id": "100035"
+   },
+   "roles": [
+    "2015",
+    "2014"
+   ]
+  },
+  {
+   "user": {
+    "id": "777"
+   },
+   "roles": [
+    "2018"
+   ],
+   "bot": true
+  }
+ ],
+ "onboarding": {
+  "guild_id": "1000",
+  "enabled": true,
+  "mode": 1,
+  "default_channel_ids": [
+   "5002",
+   "5005"
+  ],
+  "prompts": [
+   {
+    "id": "7001",
+    "type": 0,
+    "title": "What do you want to help with?",
+    "single_select": false,
+    "required": true,
+    "in_onboarding": true,
+    "options": [
+     {
+      "id": "8001",
+      "title": "Protesting",
+      "description": null,
+      "role_ids": [],
+      "channel_ids": [
+       "5002"
+      ],
+      "emoji": {
+       "id": "6100",
+       "name": "protest",
+       "animated": false
+      }
+     },
+     {
+      "id": "8002",
+      "title": "Writing",
+      "description": null,
+      "role_ids": [],
+      "channel_ids": [
+       "5005"
+      ],
+      "emoji": {
+       "id": null,
+       "name": "✍️",
+       "animated": false
+      }
+     }
+    ]
+   },
+   {
+    "id": "7002",
+    "type": 1,
+    "title": "Which country are you in?",
+    "single_select": false,
+    "required": false,
+    "in_onboarding": true,
+    "options": [
+     {
+      "id": "8003",
+      "title": "France",
+      "description": null,
+      "role_ids": [
+       "2007"
+      ],
+      "channel_ids": [],
+      "emoji": {
+       "id": null,
+       "name": "🇫🇷",
+       "animated": false
+      }
+     },
+     {
+      "id": "8004",
+      "title": "Germany",
+      "description": null,
+      "role_ids": [
+       "2008"
+      ],
+      "channel_ids": [],
+      "emoji": {
+       "id": null,
+       "name": "🇩🇪",
+       "animated": false
+      }
+     },
+     {
+      "id": "8005",
+      "title": "Kenya",
+      "description": null,
+      "role_ids": [
+       "2010"
+      ],
+      "channel_ids": [],
+      "emoji": {
+       "id": null,
+       "name": "🇰🇪",
+       "animated": false
+      }
+     },
+     {
+      "id": "8006",
+      "title": "USA",
+      "description": null,
+      "role_ids": [
+       "2013"
+      ],
+      "channel_ids": [],
+      "emoji": {
+       "id": null,
+       "name": "🇺🇸",
+       "animated": false
+      }
+     }
+    ]
+   },
+   {
+    "id": "7003",
+    "type": 1,
+    "title": "More countries",
+    "single_select": false,
+    "required": false,
+    "in_onboarding": true,
+    "options": [
+     {
+      "id": "8007",
+      "title": "Turkey",
+      "description": null,
+      "role_ids": [
+       "2012"
+      ],
+      "channel_ids": [],
+      "emoji": {
+       "id": null,
+       "name": "🇹🇷",
+       "animated": false
+      }
+     },
+     {
+      "id": "8008",
+      "title": "Cuba",
+      "description": null,
+      "role_ids": [
+       "2004"
+      ],
+      "channel_ids": [],
+      "emoji": null
+     },
+     {
+      "id": "8009",
+      "title": "Not listed? Ask here",
+      "description": null,
+      "role_ids": [],
+      "channel_ids": [
+       "5007"
+      ],
+      "emoji": {
+       "id": null,
+       "name": "❓",
+       "animated": false
+      }
+     }
+    ]
+   },
+   {
+    "id": "7004",
+    "type": 0,
+    "title": "How did you hear about us?",
+    "single_select": true,
+    "required": false,
+    "in_onboarding": false,
+    "options": [
+     {
+      "id": "8010",
+      "title": "A friend",
+      "description": null,
+      "role_ids": [],
+      "channel_ids": [],
+      "emoji": null
+     }
+    ]
+   }
+  ]
+ }
+}
