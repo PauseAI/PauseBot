@@ -25,7 +25,7 @@ async def test_schema_is_idempotent(pool):
     tables = await pool.fetch(
         "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"
     )
-    assert [t["tablename"] for t in tables] == ["discord_members", "message_edits", "message_log", "server_snapshots"]
+    assert [t["tablename"] for t in tables] == ["discord_members", "log_posts", "message_edits", "message_log", "server_snapshots"]
 
 
 async def test_discord_ids_fit_in_bigint(pool):
@@ -319,3 +319,24 @@ async def test_author_bot_is_stored_and_returned_on_delete(pool):
     })
     deleted = await db.log_delete(pool, [1, 2, 3], NOW)
     assert {r["message_id"]: r["author_bot"] for r in deleted} == {1: True, 2: False, 3: True}
+
+
+@pytest.mark.parametrize("delete_first", [True, False])
+async def test_a_deletion_logged_from_the_cache_survives_the_late_write(pool, delete_first):
+    # The delete handler logs a message it only has from the cache, with deleted_at; on_message's
+    # background write lands before or after. Either way the row ends up deleted, with its text.
+    late = log(pool, 1, content="spam")
+    tombstone = log(pool, 1, content="spam", deleted_at=NOW)
+    for write in ((tombstone, late) if delete_first else (late, tombstone)):
+        await write
+    row = await db.get_message(pool, 1)
+    assert row["deleted_at"] == NOW and row["content"] == "spam"
+
+
+async def test_log_posts_expire_by_their_oldest_quoted_message(pool):
+    await db.record_log_post(pool, 10, 5000, NOW - datetime.timedelta(days=31))
+    await db.record_log_post(pool, 11, 5000, NOW - datetime.timedelta(days=29))
+    cutoff = NOW - datetime.timedelta(days=30)
+    assert [r["post_id"] for r in await db.expired_log_posts(pool, cutoff)] == [10]
+    await db.forget_log_post(pool, 10)
+    assert await db.expired_log_posts(pool, cutoff) == []

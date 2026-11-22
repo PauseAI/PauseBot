@@ -29,39 +29,31 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 CIVICRM_URL = os.getenv('CIVICRM_URL')
 CIVICRM_API_KEY = os.getenv('CIVICRM_API_KEY')
 
+def ids_from_env(name):
+    """The Discord IDs in an environment variable, separated by commas or spaces: an empty set when
+    unset or blank, or None (with a warning) if any entry isn't an ID."""
+    parts = [part for part in re.split(r"[\s,]+", os.getenv(name) or "") if part]
+    if not all(part.isascii() and part.isdigit() for part in parts):
+        print(f"Warning: {name} has an entry that isn't a Discord ID.")
+        return None
+    return {int(part) for part in parts}
+
 def channel_id_from_env(name):
-    """A channel ID from the environment, or None when unset, blank or not a number (so a bad
-    value turns the feature off rather than stopping the bot)."""
-    value = (os.getenv(name) or "").strip()
-    if not value:
-        return None
-    try:
-        return int(value)
-    except ValueError:
-        print(f"Warning: {name} is not a channel ID ({len(value)} characters); ignoring it.")
-        return None
+    """The one channel ID in an environment variable, or None when unset or not exactly one ID
+    (so a bad value turns the feature off rather than stopping the bot)."""
+    ids = ids_from_env(name)
+    if ids and len(ids) > 1:
+        print(f"Warning: {name} holds more than one ID; ignoring it.")
+    return next(iter(ids)) if ids and len(ids) == 1 else None
 
 # The moderators' log channel (#logs), where message edits and deletions are posted. Unset means off.
 MESSAGE_LOG_CHANNEL_ID = channel_id_from_env('MESSAGE_LOG_CHANNEL_ID')
 
-def id_set_from_env(name):
-    """Comma-separated IDs from the environment. A value that isn't a number is left out (with a
-    warning) rather than stopping the bot."""
-    ids = set()
-    for part in (os.getenv(name) or "").split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if part.isascii() and part.isdigit():
-            ids.add(int(part))
-        else:
-            print(f"Warning: {name} has an entry that isn't an ID ({len(part)} characters); ignoring it.")
-    return ids
-
 # Categories and channels whose edits and deletions are never posted to the log channel: internal
 # groups such as staff and national leads, where nothing needs moderating. A channel or thread is
-# left out if its own ID, its parent channel's or its category's is listed.
-MESSAGE_LOG_IGNORE_IDS = id_set_from_env('MESSAGE_LOG_IGNORE_IDS')
+# left out if its own ID, its parent channel's or its category's is listed. None (an entry that
+# isn't an ID) turns posting off altogether, so a typo never posts an internal channel.
+MESSAGE_LOG_IGNORE_IDS = ids_from_env('MESSAGE_LOG_IGNORE_IDS')
 
 ALLOWED_EXPORT_ROLE_ID = 1409324452545822793
 
@@ -895,8 +887,9 @@ async def on_raw_message_edit(payload):
     except Exception as e:
         print(f"Error logging edit of message {payload.message_id}: {e}")
         return
+    log_channel = log_channel_for(payload.guild_id, payload.channel_id)
     # log_edit gives the old text only for a real change to a message the log already had
-    if before is None or payload.data.get("author", {}).get("bot"):
+    if log_channel is None or before is None or payload.data.get("author", {}).get("bot"):
         return
     try:
         author_id = int(payload.data["author"]["id"])
@@ -904,48 +897,64 @@ async def on_raw_message_edit(payload):
         return
     if is_bot_user(author_id):
         return
-    await post_to_log_channel(payload.guild_id, payload.channel_id, [modlog.edit_embed(
+    embed = modlog.edit_embed(
         guild_id=payload.guild_id, channel_id=payload.channel_id, message_id=payload.message_id,
         author_id=author_id, before=before, after=payload.data["content"], edited_at=edited_at,
         parent_id=thread_parent_id(payload.guild_id, payload.channel_id),
-    )])
+    )
+    sent_at = discord.utils.snowflake_time(payload.message_id)
+    await post_to_log_channel(log_channel, payload.guild_id, payload.channel_id, [(embed, sent_at)])
 
 @bot.event
 async def on_raw_message_delete(payload):
     if not is_active_guild(payload.guild_id):
         return
-    deleted_at = datetime.datetime.now(datetime.UTC)
-    try:
-        rows = await asyncio.wait_for(
-            db.log_delete(db_pool, [payload.message_id], deleted_at), LOG_WRITE_TIMEOUT)
-    except Exception as e:
-        print(f"Error logging deletion of message {payload.message_id}: {e}")
-        rows = []
     cached = [payload.cached_message] if payload.cached_message else []
-    await post_deletions(payload.guild_id, payload.channel_id, [payload.message_id], rows, cached, deleted_at)
+    await handle_deletion(payload.guild_id, payload.channel_id, [payload.message_id], cached)
 
 @bot.event
 async def on_raw_bulk_message_delete(payload):
     if not is_active_guild(payload.guild_id):
         return
+    await handle_deletion(payload.guild_id, payload.channel_id, payload.message_ids, payload.cached_messages)
+
+async def handle_deletion(guild_id, channel_id, message_ids, cached):
+    """Marks the messages deleted in the log, then posts them to the log channel."""
     deleted_at = datetime.datetime.now(datetime.UTC)
     try:
-        rows = await asyncio.wait_for(
-            db.log_delete(db_pool, payload.message_ids, deleted_at), LOG_WRITE_TIMEOUT)
+        rows = list(await asyncio.wait_for(db.log_delete(db_pool, message_ids, deleted_at), LOG_WRITE_TIMEOUT))
     except Exception as e:
-        print(f"Error logging bulk deletion in channel {payload.channel_id}: {e}")
+        print(f"Error logging deletion of {len(message_ids)} message(s) in channel {channel_id}: {e}")
         rows = []
-    await post_deletions(payload.guild_id, payload.channel_id, payload.message_ids, rows,
-                         payload.cached_messages, deleted_at)
+    # A message deleted before its background log write landed (a fast auto-delete) isn't in the
+    # log yet, but discord.py's cache has it: log it as deleted, so the late write can't record it as
+    # live, and post it from there. Never one past the retention window, which the log has dropped.
+    logged = {r["message_id"] for r in rows}
+    cutoff = deleted_at - datetime.timedelta(days=db.RETENTION_DAYS)
+    for message in cached:
+        if message.id in logged or message.created_at < cutoff or message.author.id == bot.user.id:
+            continue
+        row = row_from_cached(message, guild_id)
+        try:
+            await asyncio.wait_for(db.log_message(db_pool, **{
+                k: row[k] for k in ("message_id", "guild_id", "channel_id", "author_id", "content",
+                                    "attachments", "created_at", "author_bot")
+            }, deleted_at=deleted_at), LOG_WRITE_TIMEOUT)
+        except Exception as e:
+            print(f"Error logging deletion of cached message {message.id}: {e}")
+        rows.append(row)
+    log_channel = log_channel_for(guild_id, channel_id)
+    if log_channel is not None:
+        await post_deletions(log_channel, guild_id, channel_id, message_ids, rows, deleted_at)
 
 # ── Log channel (replacing Quark's posts in #logs) ────────────────────────────
 
 def log_channel_for(guild_id, channel_id):
     """The log channel to post an event in guild_id to, or None: when MESSAGE_LOG_CHANNEL_ID is
-    unset, the channel isn't in that server (so a test server's messages never reach production's
-    log, or the other way round), or the event happened in the log channel itself (which would
-    post about its own posts)."""
-    if not MESSAGE_LOG_CHANNEL_ID or channel_id == MESSAGE_LOG_CHANNEL_ID:
+    unset, MESSAGE_LOG_IGNORE_IDS is malformed, the channel isn't in that server (so a test server's
+    messages never reach production's log, or the other way round), or the event happened in the
+    log channel itself (which would post about its own posts)."""
+    if not MESSAGE_LOG_CHANNEL_ID or MESSAGE_LOG_IGNORE_IDS is None or channel_id == MESSAGE_LOG_CHANNEL_ID:
         return None
     channel = bot.get_channel(MESSAGE_LOG_CHANNEL_ID)
     if channel is None or channel.guild.id != guild_id:
@@ -970,14 +979,12 @@ def is_bot_author(row):
     so fall back on the user cache."""
     return bool(row["author_bot"]) or is_bot_user(row["author_id"])
 
-def row_from_cached(message):
-    """A cached discord.Message in the shape log_delete returns, for a message deleted before its
-    log write landed (on_message logs in the background, so a fast auto-delete can beat it)."""
+def row_from_cached(message, guild_id):
+    """A cached discord.Message in the shape log_delete returns."""
     return {
-        "message_id": message.id, "guild_id": message.guild.id if message.guild else None,
-        "channel_id": message.channel.id, "author_id": message.author.id,
-        "author_bot": message.author.bot, "content": message.content,
-        "attachments": [{"filename": a.filename} for a in message.attachments],
+        "message_id": message.id, "guild_id": guild_id, "channel_id": message.channel.id,
+        "author_id": message.author.id, "author_bot": message.author.bot, "content": message.content,
+        "attachments": attachments_json(a.to_dict() for a in message.attachments),
         "created_at": message.created_at,
     }
 
@@ -1016,66 +1023,58 @@ async def is_ignored_channel(guild_id, channel_id):
             return True
     return bool({channel.id, channel.category_id} & MESSAGE_LOG_IGNORE_IDS)
 
-async def post_to_log_channel(guild_id, channel_id, embeds):
-    channel = log_channel_for(guild_id, channel_id)
-    if channel is None or not embeds:
+async def post_to_log_channel(log_channel, guild_id, channel_id, items):
+    """Posts (embed, sent_at) items, where sent_at is when the quoted message was sent, and records
+    each post so the daily prune can delete it once its oldest quoted message passes retention."""
+    if not items or await is_ignored_channel(guild_id, channel_id):
         return
-    if await is_ignored_channel(guild_id, channel_id):
-        return
-    for group in modlog.chunk(embeds):
+    for group in modlog.chunk(items):
         try:
-            await channel.send(embeds=group, allowed_mentions=modlog.NO_MENTIONS)
+            post = await log_channel.send(embeds=[embed for embed, _ in group], allowed_mentions=modlog.NO_MENTIONS)
         except Exception as e:
             print(f"Error posting to the log channel: {e}")
             return
+        oldest = min(sent_at for _, sent_at in group)
+        try:
+            await asyncio.wait_for(db.record_log_post(db_pool, post.id, log_channel.id, oldest), LOG_WRITE_TIMEOUT)
+        except Exception as e:
+            # A post the prune doesn't know of would keep message text past retention, so take it down
+            print(f"Error recording log channel post {post.id}, so deleting it: {e}")
+            try:
+                await post.delete()
+            except Exception as e:
+                print(f"Error deleting unrecorded log channel post {post.id}: {e}")
 
-async def post_deletions(guild_id, channel_id, message_ids, rows, cached, deleted_at):
-    """Posts the deleted messages: from the log's rows, else from discord.py's message cache.
-    Messages neither has are counted in one post rather than shown."""
-    if log_channel_for(guild_id, channel_id) is None:
-        return
-    rows = list(rows)
-    logged = {r["message_id"] for r in rows}
-    rows += [row_from_cached(m) for m in cached if m.id not in logged]
+async def post_deletions(log_channel, guild_id, channel_id, message_ids, rows, deleted_at):
+    """Posts the deleted messages. Ones the log and cache don't have are counted in one post."""
     known = {r["message_id"] for r in rows}
     unknown = sum(1 for i in message_ids if i not in known)
     parent_id = thread_parent_id(guild_id, channel_id)
     rows = sorted((r for r in rows if not is_bot_author(r)), key=lambda r: r["created_at"])
-    embeds = [modlog.delete_embed(r, deleted_at, parent_id) for r in rows]
+    items = [(modlog.delete_embed(r, deleted_at, parent_id), r["created_at"]) for r in rows]
     # Only for bulk deletions: a single unknown deletion has nothing worth showing
     if unknown and len(message_ids) > 1:
-        embeds.append(modlog.unlogged_embed(unknown, channel_id, deleted_at, parent_id))
-    await post_to_log_channel(guild_id, channel_id, embeds)
-
-# How far back past the cutoff each daily run looks for the bot's own old posts. Covers the bot
-# being down for weeks without scanning the channel's whole history (and Quark's) every day.
-LOG_PRUNE_LOOKBACK_DAYS = 30
+        items.append((modlog.unlogged_embed(unknown, channel_id, deleted_at, parent_id), deleted_at))
+    await post_to_log_channel(log_channel, guild_id, channel_id, items)
 
 async def prune_log_channel(now=None):
-    """Deletes the bot's own log channel posts that quote a message sent over RETENTION_DAYS ago
-    (or are that old themselves), so the channel keeps message text no longer than the database,
-    which also counts from when the message was sent. Returns how many it deleted."""
-    if not MESSAGE_LOG_CHANNEL_ID:
-        return 0
-    channel = bot.get_channel(MESSAGE_LOG_CHANNEL_ID)
-    if channel is None or not is_active_guild(channel.guild.id):
-        return 0
+    """Deletes the bot's log channel posts whose oldest quoted message was sent over RETENTION_DAYS
+    ago, so the channel keeps message text no longer than the database, which also counts from when
+    the message was sent. Returns how many it deleted."""
     now = now or datetime.datetime.now(datetime.UTC)
     cutoff = now - datetime.timedelta(days=db.RETENTION_DAYS)
     removed = 0
-    # A post can quote a message up to RETENTION_DAYS older than itself, so look at recent posts too
-    async for message in channel.history(limit=None,
-                                         after=cutoff - datetime.timedelta(days=LOG_PRUNE_LOOKBACK_DAYS)):
-        if message.author.id != bot.user.id:
+    for post in await db.expired_log_posts(db_pool, cutoff):
+        message = bot.get_partial_messageable(post["channel_id"]).get_partial_message(post["post_id"])
+        try:
+            await message.delete()
+            removed += 1
+        except discord.NotFound:
+            pass  # someone deleted it already
+        except Exception as e:
+            print(f"Error deleting log channel post {post['post_id']}, will retry tomorrow: {e}")
             continue
-        if modlog.oldest_quoted(message) < cutoff:
-            try:
-                await message.delete()
-                removed += 1
-            except discord.NotFound:
-                pass  # someone deleted it already
-            except Exception as e:
-                print(f"Error deleting log channel post {message.id}: {e}")
+        await db.forget_log_post(db_pool, post["post_id"])
     return removed
 
 if __name__ == "__main__":

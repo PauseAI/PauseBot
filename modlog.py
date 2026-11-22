@@ -4,7 +4,8 @@ import datetime
 import discord
 
 # Discord's limits: an embed's description holds 4096 characters, one embed 6000 in all, and one
-# message up to 10 embeds that together hold at most 6000.
+# message up to 10 embeds that together hold at most 6000. Discord's client counts in UTF-16 code
+# units (an emoji can be two), so everything here does too, to be safe either way.
 DESCRIPTION_LIMIT = 4096
 MESSAGE_EMBED_CHARS = 6000
 MESSAGE_EMBEDS = 10
@@ -16,25 +17,57 @@ ATTACHMENTS_LIMIT = 1000
 EDIT_COLOUR = discord.Colour.orange()
 DELETE_COLOUR = discord.Colour.red()
 
-# Each post names the message it quotes here, which the daily prune reads back
 FOOTER_PREFIX = "Message ID "
 
 # Log posts never ping, whatever the text they quote
 NO_MENTIONS = discord.AllowedMentions.none()
 
 
+def utf16_len(text):
+    return len(text.encode("utf-16-le")) // 2
+
+
+def cut_utf16(text, units):
+    """The longest start of text that fits in `units` UTF-16 code units, never splitting a character."""
+    n = 0
+    for i, ch in enumerate(text):
+        n += 2 if ord(ch) > 0xFFFF else 1
+        if n > units:
+            return text[:i]
+    return text
+
+
+def truncation_marker(text):
+    return f"\n… (truncated, {len(text)} characters in all)"
+
+
 def truncate(text, limit):
-    """text cut to at most `limit` characters, saying how much was left out."""
-    if len(text) <= limit:
+    """text cut to at most `limit` UTF-16 units, saying how much was left out."""
+    if utf16_len(text) <= limit:
         return text
-    # Reserve room for the marker itself, sized for the largest count it could show
-    marker = f"\n… (truncated, {len(text)} characters in all)"
-    return text[:limit - len(marker)] + marker
+    marker = truncation_marker(text)
+    return cut_utf16(text, limit - utf16_len(marker)) + marker
+
+
+FENCE = "```"
 
 
 def quoted(text, limit):
-    """Message text for an embed, or a note that it was empty (e.g. attachments only)."""
-    return truncate(text, limit) if text else "*(no text)*"
+    """Message text in a code block, so its own markdown, mentions and line breaks can't pass for
+    the post's own lines; or a note that it was empty (e.g. attachments only). Backticks get a
+    zero-width space after them so the text can't close the block. Within `limit` UTF-16 units."""
+    if not text:
+        return "*(no text)*"
+    body = text.replace("`", "`\u200b")
+    room = limit - utf16_len(FENCE + "\n" + "\n" + FENCE)
+    if utf16_len(body) <= room:
+        return f"{FENCE}\n{body}\n{FENCE}"
+    marker = truncation_marker(text)
+    body = cut_utf16(body, room - utf16_len(marker))
+    # Never end the block mid-escape: a lone backtick before the fence would join it
+    if body.endswith("`"):
+        body = body[:-1]
+    return f"{FENCE}\n{body}\n{FENCE}{marker}"
 
 
 def jump_url(guild_id, channel_id, message_id):
@@ -76,7 +109,8 @@ def delete_embed(row, deleted_at, parent_id=None):
     ]
     names = [a.get("filename") or "(unnamed)" for a in row["attachments"] or []]
     if names:
-        lines.append(f"**Attachments:** {truncate(', '.join(names), ATTACHMENTS_LIMIT)}")
+        names = discord.utils.escape_markdown(", ".join(names))
+        lines.append(f"**Attachments:** {truncate(names, ATTACHMENTS_LIMIT)}")
     lines += ["", quoted(row["content"], DELETE_TEXT_LIMIT)]
     return discord.Embed(
         title="Message deleted", description="\n".join(lines), colour=DELETE_COLOUR, timestamp=deleted_at,
@@ -93,28 +127,24 @@ def unlogged_embed(count, channel_id, deleted_at, parent_id=None):
     )
 
 
-def chunk(embeds):
-    """Groups embeds into the lists one message can carry each."""
+def embed_size(embed):
+    """An embed's length as Discord counts it toward the 6000 limit, in UTF-16 units."""
+    return sum(utf16_len(t or "") for t in (embed.title, embed.description, embed.footer.text))
+
+
+def chunk(items):
+    """Groups (embed, sent_at) items into what one message can carry each. A message only holds
+    items whose quoted messages were sent on the same UTC day, as the daily prune deletes a post
+    when its oldest quoted message passes retention: that way no post goes more than a day early."""
     groups, current, size = [], [], 0
-    for embed in embeds:
-        n = len(embed)
-        if current and (len(current) == MESSAGE_EMBEDS or size + n > MESSAGE_EMBED_CHARS):
+    for item in items:
+        n = embed_size(item[0])
+        if current and (len(current) == MESSAGE_EMBEDS or size + n > MESSAGE_EMBED_CHARS
+                        or item[1].date() != current[0][1].date()):
             groups.append(current)
             current, size = [], 0
-        current.append(embed)
+        current.append(item)
         size += n
     if current:
         groups.append(current)
     return groups
-
-
-
-def oldest_quoted(post):
-    """When the oldest message a log post quotes was sent (from the message IDs in its footers),
-    or when the post itself was made if that's older or it quotes none."""
-    times = [post.created_at]
-    for embed in post.embeds:
-        text = embed.footer.text or ""
-        if text.startswith(FOOTER_PREFIX) and text[len(FOOTER_PREFIX):].isdigit():
-            times.append(discord.utils.snowflake_time(int(text[len(FOOTER_PREFIX):])))
-    return min(times)

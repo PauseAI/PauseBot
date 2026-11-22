@@ -47,14 +47,19 @@ async def latest_snapshot(pool, guild_id):
 # ── Message log ───────────────────────────────────────────────────────────────
 
 async def log_message(pool, *, message_id, guild_id, channel_id, author_id, content, attachments, created_at,
-                      author_bot=False):
+                      author_bot=False, deleted_at=None):
+    """Stores a message; a message already stored is left alone, except that a deletion is kept.
+    `deleted_at` is set for a message deleted before its log write landed, so whichever write
+    comes second, the row ends up marked deleted."""
     await pool.execute(
         """
-        INSERT INTO message_log (message_id, guild_id, channel_id, author_id, content, attachments, created_at, author_bot)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        ON CONFLICT (message_id) DO NOTHING
+        INSERT INTO message_log (message_id, guild_id, channel_id, author_id, content, attachments, created_at,
+                                 author_bot, deleted_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (message_id) DO UPDATE SET deleted_at = coalesce(message_log.deleted_at, EXCLUDED.deleted_at)
+            WHERE message_log.deleted_at IS NULL AND EXCLUDED.deleted_at IS NOT NULL
         """,
-        message_id, guild_id, channel_id, author_id, content, attachments, created_at, author_bot,
+        message_id, guild_id, channel_id, author_id, content, attachments, created_at, author_bot, deleted_at,
     )
 
 
@@ -125,6 +130,25 @@ async def get_edits(pool, message_id):
         "SELECT content_before, edited_at FROM message_edits WHERE message_id = $1 ORDER BY edited_at, id",
         message_id,
     )
+
+
+async def record_log_post(pool, post_id, channel_id, oldest_sent_at):
+    """Remembers a log channel post and when the oldest message it quotes was sent."""
+    await pool.execute(
+        "INSERT INTO log_posts (post_id, channel_id, oldest_sent_at) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        post_id, channel_id, oldest_sent_at,
+    )
+
+
+async def expired_log_posts(pool, cutoff):
+    """Log channel posts quoting a message sent before cutoff, oldest first."""
+    return await pool.fetch(
+        "SELECT post_id, channel_id FROM log_posts WHERE oldest_sent_at < $1 ORDER BY oldest_sent_at", cutoff,
+    )
+
+
+async def forget_log_post(pool, post_id):
+    await pool.execute("DELETE FROM log_posts WHERE post_id = $1", post_id)
 
 
 # ── Discord members ───────────────────────────────────────────────────────────
