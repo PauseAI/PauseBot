@@ -923,26 +923,24 @@ async def handle_deletion(guild_id, channel_id, message_ids, cached):
     deleted_at = datetime.datetime.now(datetime.UTC)
     try:
         rows = list(await asyncio.wait_for(db.log_delete(db_pool, message_ids, deleted_at), LOG_WRITE_TIMEOUT))
+        database_ok = True
     except Exception as e:
         print(f"Error logging deletion of {len(message_ids)} message(s) in channel {channel_id}: {e}")
-        rows = []
+        rows, database_ok = [], False
     # A message deleted before its background log write landed (a fast auto-delete) isn't in the
     # log yet, but discord.py's cache has it: log it as deleted, so the late write can't record it as
     # live, and post it from there. Never one past the retention window, which the log has dropped.
     logged = {r["message_id"] for r in rows}
     cutoff = deleted_at - datetime.timedelta(days=db.RETENTION_DAYS)
-    for message in cached:
-        if message.id in logged or message.created_at < cutoff or message.author.id == bot.user.id:
-            continue
-        row = row_from_cached(message, guild_id)
+    fallback = [row_from_cached(m, guild_id) for m in cached
+                if m.id not in logged and m.created_at >= cutoff and m.author.id != bot.user.id]
+    if fallback and database_ok:
         try:
-            await asyncio.wait_for(db.log_message(db_pool, **{
-                k: row[k] for k in ("message_id", "guild_id", "channel_id", "author_id", "content",
-                                    "attachments", "created_at", "author_bot")
-            }, deleted_at=deleted_at), LOG_WRITE_TIMEOUT)
+            # Only the ones this write marked deleted: one already marked was posted before
+            fallback = await asyncio.wait_for(log_cached_deletions(fallback, deleted_at), LOG_WRITE_TIMEOUT)
         except Exception as e:
-            print(f"Error logging deletion of cached message {message.id}: {e}")
-        rows.append(row)
+            print(f"Error logging deletion of {len(fallback)} cached message(s): {e}")
+    rows += fallback
     log_channel = log_channel_for(guild_id, channel_id)
     if log_channel is not None:
         await post_deletions(log_channel, guild_id, channel_id, message_ids, rows, deleted_at)
@@ -979,6 +977,15 @@ def is_bot_author(row):
     so fall back on the user cache."""
     return bool(row["author_bot"]) or is_bot_user(row["author_id"])
 
+async def log_cached_deletions(rows, deleted_at):
+    """Logs cached rows as deleted; returns the ones that weren't already logged as deleted."""
+    fields = ("message_id", "guild_id", "channel_id", "author_id", "content", "attachments", "created_at", "author_bot")
+    marked = []
+    for row in rows:
+        if await db.log_message(db_pool, **{k: row[k] for k in fields}, deleted_at=deleted_at):
+            marked.append(row)
+    return marked
+
 def row_from_cached(message, guild_id):
     """A cached discord.Message in the shape log_delete returns."""
     return {
@@ -1007,6 +1014,8 @@ async def is_ignored_channel(guild_id, channel_id):
     """Whether channel_id, its parent channel (for a thread) or its category is in
     MESSAGE_LOG_IGNORE_IDS. With the list set, a channel that can't be looked up counts as
     ignored, so a lookup failure never posts an internal channel's messages."""
+    if MESSAGE_LOG_IGNORE_IDS is None:
+        return True  # malformed list: ignore everything
     if not MESSAGE_LOG_IGNORE_IDS:
         return False
     if channel_id in MESSAGE_LOG_IGNORE_IDS:
@@ -1038,12 +1047,17 @@ async def post_to_log_channel(log_channel, guild_id, channel_id, items):
         try:
             await asyncio.wait_for(db.record_log_post(db_pool, post.id, log_channel.id, oldest), LOG_WRITE_TIMEOUT)
         except Exception as e:
-            # A post the prune doesn't know of would keep message text past retention, so take it down
+            # A post the prune doesn't know of would keep message text past retention, so take it
+            # down, or failing that keep it for the next prune to record
             print(f"Error recording log channel post {post.id}, so deleting it: {e}")
             try:
                 await post.delete()
             except Exception as e:
-                print(f"Error deleting unrecorded log channel post {post.id}: {e}")
+                print(f"Error deleting unrecorded log channel post {post.id}, will record it later: {e}")
+                unrecorded_log_posts.append((post.id, log_channel.id, oldest))
+
+# Posts that could be neither recorded nor deleted; the next prune records them first
+unrecorded_log_posts = []
 
 async def post_deletions(log_channel, guild_id, channel_id, message_ids, rows, deleted_at):
     """Posts the deleted messages. Ones the log and cache don't have are counted in one post."""
@@ -1063,18 +1077,27 @@ async def prune_log_channel(now=None):
     the message was sent. Returns how many it deleted."""
     now = now or datetime.datetime.now(datetime.UTC)
     cutoff = now - datetime.timedelta(days=db.RETENTION_DAYS)
+    while unrecorded_log_posts:
+        await db.record_log_post(db_pool, *unrecorded_log_posts[0])
+        unrecorded_log_posts.pop(0)
     removed = 0
     for post in await db.expired_log_posts(db_pool, cutoff):
-        message = bot.get_partial_messageable(post["channel_id"]).get_partial_message(post["post_id"])
+        # Only channels this bot posts in: a bot in developer mode never touches production's posts
+        channel = bot.get_channel(post["channel_id"])
+        if channel is None or not is_active_guild(channel.guild.id):
+            continue
         try:
-            await message.delete()
+            await channel.get_partial_message(post["post_id"]).delete()
             removed += 1
         except discord.NotFound:
             pass  # someone deleted it already
         except Exception as e:
             print(f"Error deleting log channel post {post['post_id']}, will retry tomorrow: {e}")
             continue
-        await db.forget_log_post(db_pool, post["post_id"])
+        try:
+            await db.forget_log_post(db_pool, post["post_id"])
+        except Exception as e:
+            print(f"Error forgetting log channel post {post['post_id']}: {e}")
     return removed
 
 if __name__ == "__main__":

@@ -50,8 +50,9 @@ async def log_message(pool, *, message_id, guild_id, channel_id, author_id, cont
                       author_bot=False, deleted_at=None):
     """Stores a message; a message already stored is left alone, except that a deletion is kept.
     `deleted_at` is set for a message deleted before its log write landed, so whichever write
-    comes second, the row ends up marked deleted."""
-    await pool.execute(
+    comes second, the row ends up marked deleted. Returns whether it inserted a row or marked one
+    deleted."""
+    result = await pool.execute(
         """
         INSERT INTO message_log (message_id, guild_id, channel_id, author_id, content, attachments, created_at,
                                  author_bot, deleted_at)
@@ -61,6 +62,8 @@ async def log_message(pool, *, message_id, guild_id, channel_id, author_id, cont
         """,
         message_id, guild_id, channel_id, author_id, content, attachments, created_at, author_bot, deleted_at,
     )
+    # The command tag ("INSERT 0 1") says whether a row was inserted or marked deleted
+    return result.endswith(" 1")
 
 
 async def log_edit(pool, message_id, content, edited_at, message=None):

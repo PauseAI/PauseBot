@@ -504,3 +504,61 @@ async def test_a_listed_thread_is_left_out(ignoring_staff, pool, monkeypatch):
     await log(pool, 1, channel_id=9002)
     await main.on_raw_message_delete(delete_event(1, channel_id=9002))
     assert ignoring_staff.sent == []
+
+
+# ── Second review round ───────────────────────────────────────────────────────
+
+async def test_prune_leaves_posts_in_channels_this_bot_does_not_post_in(log_channel, pool, monkeypatch):
+    old = NOW - datetime.timedelta(days=31)
+    await db.record_log_post(pool, 1, 6000, old)          # a channel this bot can't see
+    await db.record_log_post(pool, 2, LOG_CHANNEL, old)
+    log_channel.guild.id = OTHER_GUILD                    # e.g. production's channel, seen by a dev bot
+    assert await main.prune_log_channel(now=NOW) == 0
+    assert log_channel.deleted == []
+    assert len(await db.expired_log_posts(pool, NOW)) == 2
+
+
+async def test_a_post_neither_recorded_nor_deleted_is_recorded_by_the_next_prune(log_channel, pool, monkeypatch):
+    monkeypatch.setattr(main, "unrecorded_log_posts", [])
+    real_record = db.record_log_post
+
+    async def broken(*args):
+        raise RuntimeError("database down")
+    monkeypatch.setattr(main.db, "record_log_post", broken)
+
+    async def undeletable(self):
+        raise discord.HTTPException(types.SimpleNamespace(status=500, reason="oops"), "oops")
+    monkeypatch.setattr(FakePost, "delete", undeletable)
+    sent = NOW - datetime.timedelta(days=29)
+    await log(pool, 1, created_at=sent)
+    await main.on_raw_message_delete(delete_event(1))
+    [(_, _, post)] = log_channel.sent
+    monkeypatch.setattr(main.db, "record_log_post", real_record)
+    await main.prune_log_channel(now=NOW)
+    assert main.unrecorded_log_posts == []
+    assert [r["post_id"] for r in await db.expired_log_posts(pool, sent + datetime.timedelta(seconds=1))] == [post.id]
+
+
+async def test_a_cached_message_already_logged_deleted_is_not_posted_again(log_channel, pool):
+    await log(pool, 7, content="once", deleted_at=NOW)
+    event = delete_event(7)
+    event.cached_message = cached_message(7, "once")
+    await main.on_raw_message_delete(event)
+    assert log_channel.sent == []
+
+
+async def test_a_malformed_ignore_list_ignores_every_channel_on_its_own(monkeypatch):
+    monkeypatch.setattr(main, "MESSAGE_LOG_IGNORE_IDS", None)
+    assert await main.is_ignored_channel(GUILD, GENERAL) is True
+
+
+async def test_one_failed_forget_does_not_stop_the_prune(log_channel, pool, monkeypatch):
+    old = NOW - datetime.timedelta(days=31)
+    await db.record_log_post(pool, 1, LOG_CHANNEL, old)
+    await db.record_log_post(pool, 2, LOG_CHANNEL, old)
+
+    async def flaky(pool, post_id):
+        if post_id == 1:
+            raise RuntimeError("blip")
+    monkeypatch.setattr(main.db, "forget_log_post", flaky)
+    assert await main.prune_log_channel(now=NOW) == 2
