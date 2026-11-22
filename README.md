@@ -14,6 +14,7 @@ PauseBot is a Discord bot designed to streamline the onboarding pipeline for Pau
 - **Role-based Logic**: Easily map new or existing Discord Role IDs to specific email addresses.
 - **Server Snapshots** (replacing Xenon): Once a day, saves the server's roles, channels and permission overwrites, member roles and nicknames, and bans to Postgres. Kept for 30 days.
 - **Message Log** (replacing Quark): Stores every server message, its edits and when it was deleted in Postgres. Kept for 30 days from when the message was sent.
+- **Log Channel** (replacing Quark's posts in #logs): With `MESSAGE_LOG_CHANNEL_ID` set, posts each message edit (author, channel or thread, old and new text, link) and deletion (author, channel or thread, the text as last logged, attachment names, when it was sent) to that channel, from what the message log holds. Bulk deletions post every logged message and a count of the ones the log didn't have. It leaves out bots' messages, events in the log channel itself, and edits or single deletions of messages the log doesn't have (sent over 30 days ago, or while the bot was down). Text is cut to fit Discord's embed limits, and posts never ping anyone. Each daily run deletes the bot's own posts there that quote a message sent over 30 days ago, so the channel keeps message text no longer than the database does. In the log channel the bot needs View Channel, Send Messages, Embed Links and Read Message History.
 
 ## Prerequisites
 
@@ -61,6 +62,7 @@ PauseBot is a Discord bot designed to streamline the onboarding pipeline for Pau
    - `STATS_SECRET`: Another secret, different from `WEBHOOK_SECRET`, for the onboarding dashboard to read `/stats/discord`. Without it, that endpoint refuses every request.
    - `PORT`: (Optional) Custom port for the web server to run over (defaults to 8080).
    - `DATABASE_URL`: Postgres connection string. The bot creates its tables on startup, and won't start without the database.
+   - `MESSAGE_LOG_CHANNEL_ID`: (Optional) The ID of the moderators' log channel (#logs) to post message edits and deletions to. Unset, nothing is posted; the message log itself is kept either way. In developer mode, set it to a channel on the test server.
 
 5. **Configure Roles and Channels (in `main.py`):**
    - Update `ONBOARDING_PIPELINE_CHANNEL_ID` with the channel ID where the bot should log its actions.
@@ -105,7 +107,7 @@ The bot and Postgres are in US West (California). A move to EU West is planned (
 - **Restart policy**: On Failure, up to 10 retries.
 - **Region and replicas**: US West (California), 1 replica, not serverless. Run one replica only: two would both answer Discord events and both run the scheduled jobs. Teardown (deploy overlap and draining) is off.
 - **Volumes**: none. The bot keeps nothing on disk; its data is in Postgres.
-- **Scheduled work**: none on Railway (no cron). The daily server snapshot and prune is a `discord.ext.tasks` loop inside the bot (`daily_snapshot_and_prune`). It runs at startup and then every 24 hours, so its time of day is set by the last restart (around 18:48 UTC as of November 2026). The startup run skips a server already snapshotted in the last 20 hours, so a restart within 20 hours of the last snapshot can leave a gap of up to about 44 hours. The CiviCRM link sweep is another in-process loop, hourly.
+- **Scheduled work**: none on Railway (no cron). The daily server snapshot and prune is a `discord.ext.tasks` loop inside the bot (`daily_snapshot_and_prune`). It runs at startup and then every 24 hours, so its time of day is set by the last restart (around 18:48 UTC as of November 2026). The same loop deletes the bot's log channel posts that quote a message sent over 30 days ago. The startup run skips a server already snapshotted in the last 20 hours, so a restart within 20 hours of the last snapshot can leave a gap of up to about 44 hours. The CiviCRM link sweep is another in-process loop, hourly.
 - **Variables**: `DATABASE_URL` is a reference, `${{Postgres.DATABASE_URL}}`. Set as values: `DISCORD_TOKEN`, `MAILERSEND_API_KEY`, `PORT` (8080), `WEBHOOK_SECRET`, `STATS_SECRET`, `CIVICRM_URL` and `CIVICRM_API_KEY` (without either of the last two, the bot starts but quietly never links members to CiviCRM). `DEVELOPER_MODE` is not set, which means off; leave it unset in production.
 - `MAILERSEND_API_KEY` has to be replaced before MailerSend closes on 11 December 2026 (infrastructure plan 4.3/4.6).
 

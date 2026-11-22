@@ -21,6 +21,9 @@ CREATE TABLE IF NOT EXISTS message_log (
     edited_at timestamptz,
     deleted_at timestamptz
 );
+-- Whether a bot (or webhook) sent it, so the log channel can leave bots' messages out. Rows logged
+-- before this column was added read false.
+ALTER TABLE message_log ADD COLUMN IF NOT EXISTS author_bot boolean NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS message_log_created_at ON message_log (created_at);
 CREATE INDEX IF NOT EXISTS message_log_channel_created_at ON message_log (channel_id, created_at);
 CREATE INDEX IF NOT EXISTS message_log_author_created_at ON message_log (author_id, created_at);

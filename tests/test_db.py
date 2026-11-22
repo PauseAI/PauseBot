@@ -308,3 +308,14 @@ async def test_discord_member_stats_of_an_empty_table(pool):
         "totals": {"members_net": 0, "onboarding_notification": 0, "discord_reaction": 0},
         "roles": {}, "records": 0, "skipped_no_join_date": 0,
     }
+
+
+async def test_author_bot_is_stored_and_returned_on_delete(pool):
+    await log(pool, 1, author_bot=True)
+    await log(pool, 2)
+    await db.log_edit(pool, 3, "edited", NOW, message={
+        "guild_id": GUILD, "channel_id": 111, "author_id": 222, "attachments": [], "created_at": NOW,
+        "author_bot": True,
+    })
+    deleted = await db.log_delete(pool, [1, 2, 3], NOW)
+    assert {r["message_id"]: r["author_bot"] for r in deleted} == {1: True, 2: False, 3: True}

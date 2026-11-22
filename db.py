@@ -46,14 +46,15 @@ async def latest_snapshot(pool, guild_id):
 
 # ── Message log ───────────────────────────────────────────────────────────────
 
-async def log_message(pool, *, message_id, guild_id, channel_id, author_id, content, attachments, created_at):
+async def log_message(pool, *, message_id, guild_id, channel_id, author_id, content, attachments, created_at,
+                      author_bot=False):
     await pool.execute(
         """
-        INSERT INTO message_log (message_id, guild_id, channel_id, author_id, content, attachments, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO message_log (message_id, guild_id, channel_id, author_id, content, attachments, created_at, author_bot)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (message_id) DO NOTHING
         """,
-        message_id, guild_id, channel_id, author_id, content, attachments, created_at,
+        message_id, guild_id, channel_id, author_id, content, attachments, created_at, author_bot,
     )
 
 
@@ -65,20 +66,22 @@ async def log_edit(pool, message_id, content, edited_at, message=None):
     Edit events can be handled out of order, so one older than the stored edit is dropped.
 
     `message` holds the log_message fields other than content (guild_id, channel_id, author_id,
-    attachments, created_at). With it, an edit that arrives before its message was logged stores
+    attachments, created_at, and optionally author_bot). With it, an edit that arrives before its message was logged stores
     the message with the edited content; log_message then leaves that row alone."""
     async with pool.acquire() as conn:
         async with conn.transaction():
             if message is not None:
                 inserted = await conn.fetchval(
                     """
-                    INSERT INTO message_log (message_id, guild_id, channel_id, author_id, content, attachments, created_at, edited_at)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    INSERT INTO message_log (message_id, guild_id, channel_id, author_id, content, attachments, created_at,
+                                             edited_at, author_bot)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                     ON CONFLICT (message_id) DO NOTHING
                     RETURNING message_id
                     """,
                     message_id, message["guild_id"], message["channel_id"], message["author_id"],
                     content, message["attachments"], message["created_at"], edited_at,
+                    message.get("author_bot", False),
                 )
                 if inserted is not None:
                     return None
@@ -107,7 +110,7 @@ async def log_delete(pool, message_ids, deleted_at):
         """
         UPDATE message_log SET deleted_at = $2
         WHERE message_id = ANY($1::bigint[]) AND deleted_at IS NULL
-        RETURNING message_id, guild_id, channel_id, author_id, content, attachments, created_at
+        RETURNING message_id, guild_id, channel_id, author_id, content, attachments, created_at, author_bot
         """,
         list(message_ids), deleted_at,
     )

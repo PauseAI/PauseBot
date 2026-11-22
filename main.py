@@ -15,6 +15,7 @@ from snapshot import take_snapshot
 import onboarding
 import civicrm
 import members
+import modlog
 # Load environment variables from .env file
 load_dotenv()
 
@@ -27,6 +28,14 @@ PORT = int(os.getenv('PORT', 8080))
 DATABASE_URL = os.getenv('DATABASE_URL')
 CIVICRM_URL = os.getenv('CIVICRM_URL')
 CIVICRM_API_KEY = os.getenv('CIVICRM_API_KEY')
+
+def channel_id_from_env(name):
+    """A channel ID from the environment, or None when unset or blank."""
+    value = (os.getenv(name) or "").strip()
+    return int(value) if value else None
+
+# The moderators' log channel (#logs), where message edits and deletions are posted. Unset means off.
+MESSAGE_LOG_CHANNEL_ID = channel_id_from_env('MESSAGE_LOG_CHANNEL_ID')
 
 ALLOWED_EXPORT_ROLE_ID = 1409324452545822793
 
@@ -234,6 +243,12 @@ async def daily_snapshot_and_prune():
         print(f"Pruned {snapshots} snapshot(s) and {messages} logged message(s) older than {db.RETENTION_DAYS} days.")
     except Exception as e:
         print(f"Error pruning old snapshots and messages: {e}")
+    try:
+        removed = await prune_log_channel()
+        if removed:
+            print(f"Deleted {removed} log channel post(s) older than {db.RETENTION_DAYS} days.")
+    except Exception as e:
+        print(f"Error pruning the log channel: {e}")
 
 @daily_snapshot_and_prune.before_loop
 async def before_daily_snapshot():
@@ -812,6 +827,7 @@ async def log_message_safely(message):
             content=message.content,
             attachments=attachments_json(a.to_dict() for a in message.attachments),
             created_at=message.created_at,
+            author_bot=message.author.bot,
         ), LOG_WRITE_TIMEOUT)
     except Exception as e:
         print(f"Error logging message {message.id}: {e!r}")
@@ -823,6 +839,7 @@ def message_fields_from_raw(data):
             "guild_id": int(data["guild_id"]),
             "channel_id": int(data["channel_id"]),
             "author_id": int(data["author"]["id"]),
+            "author_bot": bool(data["author"].get("bot", False)),
             "attachments": attachments_json(data.get("attachments", [])),
             "created_at": datetime.datetime.fromisoformat(data["timestamp"]),
         }
@@ -845,30 +862,126 @@ async def on_raw_message_edit(payload):
     edited_at = datetime.datetime.fromisoformat(edited) if edited else None
     try:
         # Passing the message's fields lets an edit that beats its on_message insert still be logged
-        await asyncio.wait_for(db.log_edit(
+        before = await asyncio.wait_for(db.log_edit(
             db_pool, payload.message_id, payload.data["content"], edited_at,
             message=message_fields_from_raw(payload.data),
         ), LOG_WRITE_TIMEOUT)
     except Exception as e:
         print(f"Error logging edit of message {payload.message_id}: {e}")
+        return
+    # log_edit gives the old text only for a real change to a message the log already had
+    if before is None or payload.data.get("author", {}).get("bot"):
+        return
+    try:
+        author_id = int(payload.data["author"]["id"])
+    except (KeyError, TypeError, ValueError):
+        return
+    await post_to_log_channel(payload.guild_id, payload.channel_id, [modlog.edit_embed(
+        guild_id=payload.guild_id, channel_id=payload.channel_id, message_id=payload.message_id,
+        author_id=author_id, before=before, after=payload.data["content"], edited_at=edited_at,
+        parent_id=thread_parent_id(payload.guild_id, payload.channel_id),
+    )])
 
 @bot.event
 async def on_raw_message_delete(payload):
     if not is_active_guild(payload.guild_id):
         return
+    deleted_at = datetime.datetime.now(datetime.UTC)
     try:
-        await db.log_delete(db_pool, [payload.message_id], datetime.datetime.now(datetime.UTC))
+        rows = await db.log_delete(db_pool, [payload.message_id], deleted_at)
     except Exception as e:
         print(f"Error logging deletion of message {payload.message_id}: {e}")
+        return
+    await post_deletions(payload.guild_id, payload.channel_id, rows, deleted_at)
 
 @bot.event
 async def on_raw_bulk_message_delete(payload):
     if not is_active_guild(payload.guild_id):
         return
+    deleted_at = datetime.datetime.now(datetime.UTC)
     try:
-        await db.log_delete(db_pool, payload.message_ids, datetime.datetime.now(datetime.UTC))
+        rows = await db.log_delete(db_pool, payload.message_ids, deleted_at)
     except Exception as e:
         print(f"Error logging bulk deletion in channel {payload.channel_id}: {e}")
+        return
+    # Messages the log doesn't have can't be shown, but moderators still see how many went
+    await post_deletions(payload.guild_id, payload.channel_id, rows, deleted_at,
+                         unlogged=len(payload.message_ids) - len(rows))
+
+# ── Log channel (replacing Quark's posts in #logs) ────────────────────────────
+
+def log_channel_for(guild_id, channel_id):
+    """The log channel to post an event in guild_id to, or None: when MESSAGE_LOG_CHANNEL_ID is
+    unset, the channel isn't in that server (so a test server's messages never reach production's
+    log, or the other way round), or the event happened in the log channel itself (which would
+    post about its own posts)."""
+    if not MESSAGE_LOG_CHANNEL_ID or channel_id == MESSAGE_LOG_CHANNEL_ID:
+        return None
+    channel = bot.get_channel(MESSAGE_LOG_CHANNEL_ID)
+    if channel is None or channel.guild.id != guild_id:
+        return None
+    return channel
+
+def thread_parent_id(guild_id, channel_id):
+    """The parent channel's ID if channel_id is a thread the bot knows of, else None."""
+    guild = bot.get_guild(guild_id)
+    channel = guild.get_channel_or_thread(channel_id) if guild else None
+    return channel.parent_id if isinstance(channel, discord.Thread) else None
+
+def is_bot_author(row):
+    """Whether a logged message was a bot's. Rows logged before author_bot existed read false,
+    so fall back on the user cache."""
+    if row["author_bot"]:
+        return True
+    user = bot.get_user(row["author_id"])
+    return bool(user and user.bot)
+
+async def post_to_log_channel(guild_id, channel_id, embeds):
+    channel = log_channel_for(guild_id, channel_id)
+    if channel is None or not embeds:
+        return
+    for group in modlog.chunk(embeds):
+        try:
+            await channel.send(embeds=group, allowed_mentions=modlog.NO_MENTIONS)
+        except Exception as e:
+            print(f"Error posting to the log channel: {e}")
+            return
+
+async def post_deletions(guild_id, channel_id, rows, deleted_at, unlogged=0):
+    if log_channel_for(guild_id, channel_id) is None:
+        return
+    parent_id = thread_parent_id(guild_id, channel_id)
+    rows = sorted((r for r in rows if not is_bot_author(r)), key=lambda r: r["created_at"])
+    embeds = [modlog.delete_embed(r, deleted_at, parent_id) for r in rows]
+    if unlogged > 0:
+        embeds.append(modlog.unlogged_embed(unlogged, channel_id, deleted_at, parent_id))
+    await post_to_log_channel(guild_id, channel_id, embeds)
+
+# How far back past the cutoff each daily run looks for the bot's own old posts. Covers the bot
+# being down for weeks without scanning the channel's whole history (and Quark's) every day.
+LOG_PRUNE_LOOKBACK_DAYS = 30
+
+async def prune_log_channel(now=None):
+    """Deletes the bot's own log channel posts that quote a message sent over RETENTION_DAYS ago
+    (or are that old themselves), so the channel keeps message text no longer than the database,
+    which also counts from when the message was sent. Returns how many it deleted."""
+    if not MESSAGE_LOG_CHANNEL_ID:
+        return 0
+    channel = bot.get_channel(MESSAGE_LOG_CHANNEL_ID)
+    if channel is None or not is_active_guild(channel.guild.id):
+        return 0
+    now = now or datetime.datetime.now(datetime.UTC)
+    cutoff = now - datetime.timedelta(days=db.RETENTION_DAYS)
+    removed = 0
+    # A post can quote a message up to RETENTION_DAYS older than itself, so look at recent posts too
+    async for message in channel.history(limit=None,
+                                         after=cutoff - datetime.timedelta(days=LOG_PRUNE_LOOKBACK_DAYS)):
+        if message.author.id != bot.user.id:
+            continue
+        if modlog.oldest_quoted(message) < cutoff:
+            await message.delete()
+            removed += 1
+    return removed
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN or not MAILERSEND_API_KEY or not DATABASE_URL:
