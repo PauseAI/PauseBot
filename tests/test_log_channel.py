@@ -335,7 +335,8 @@ class FakeThread(discord.Thread):
 
     @property
     def category_id(self):
-        return None  # Tests that the parent's category is looked up, not this
+        # The real property raises when the parent isn't cached
+        raise discord.ClientException("Parent channel not found")
 
 
 class FakeGuild:
@@ -345,12 +346,17 @@ class FakeGuild:
             STAFF_CHANNEL: types.SimpleNamespace(id=STAFF_CHANNEL, category_id=STAFF_CATEGORY),
             9001: FakeThread(9001, STAFF_CHANNEL),
             9002: FakeThread(9002, GENERAL),
+            9003: FakeThread(9003, 404),  # parent not cached
         }
         # Archived threads usually aren't cached; Discord still answers for them
         self.remote = {ARCHIVED_THREAD: FakeThread(ARCHIVED_THREAD, STAFF_CHANNEL)}
 
     def get_channel_or_thread(self, channel_id):
         return self.cached.get(channel_id)
+
+    def get_channel(self, channel_id):
+        channel = self.cached.get(channel_id)
+        return None if isinstance(channel, discord.Thread) else channel
 
     async def fetch_channel(self, channel_id):
         if channel_id not in self.remote:
@@ -362,11 +368,11 @@ class FakeGuild:
 def ignoring_staff(log_channel, monkeypatch):
     guild = FakeGuild()
     monkeypatch.setattr(main.bot, "get_guild", lambda gid: guild if gid == GUILD else None)
-    monkeypatch.setattr(main, "MESSAGE_LOG_IGNORE_CATEGORY_IDS", {STAFF_CATEGORY})
+    monkeypatch.setattr(main, "MESSAGE_LOG_IGNORE_IDS", {STAFF_CATEGORY})
     return log_channel
 
 
-@pytest.mark.parametrize("channel_id", [STAFF_CHANNEL, 9001, ARCHIVED_THREAD, 404])
+@pytest.mark.parametrize("channel_id", [STAFF_CHANNEL, 9001, ARCHIVED_THREAD, 404, 9003])
 async def test_internal_channels_their_threads_and_unknown_channels_post_nothing(ignoring_staff, pool, channel_id):
     await log(pool, 1, content="internal", channel_id=channel_id)
     await log(pool, 2, content="old", channel_id=channel_id)
@@ -385,15 +391,29 @@ async def test_member_channels_and_their_threads_still_post(ignoring_staff, pool
     assert "member text" in embed.description
 
 
-async def test_a_listed_channel_id_is_left_out_too(ignoring_staff, pool, monkeypatch):
-    monkeypatch.setattr(main, "MESSAGE_LOG_IGNORE_CATEGORY_IDS", {GENERAL})
-    await log(pool, 1, channel_id=GENERAL)
-    await main.on_raw_message_delete(delete_event(1, channel_id=GENERAL))
+@pytest.mark.parametrize("channel_id", [GENERAL, 9002])
+async def test_a_listed_channel_leaves_out_it_and_its_threads_but_not_its_category(
+        ignoring_staff, pool, monkeypatch, channel_id):
+    # A mixed category (like TEAMS): one channel listed, the rest still logged
+    monkeypatch.setattr(main, "MESSAGE_LOG_IGNORE_IDS", {GENERAL})
+    await log(pool, 1, channel_id=channel_id)
+    await main.on_raw_message_delete(delete_event(1, channel_id=channel_id))
+    assert ignoring_staff.sent == []
+    await log(pool, 2, content="same category", channel_id=STAFF_CHANNEL)
+    monkeypatch.setattr(main, "MESSAGE_LOG_IGNORE_IDS", {1})
+    await main.on_raw_message_delete(delete_event(2, channel_id=STAFF_CHANNEL))
+    assert len(posted(ignoring_staff)) == 1
+
+
+async def test_a_listed_thread_is_left_out(ignoring_staff, pool, monkeypatch):
+    monkeypatch.setattr(main, "MESSAGE_LOG_IGNORE_IDS", {9002})
+    await log(pool, 1, channel_id=9002)
+    await main.on_raw_message_delete(delete_event(1, channel_id=9002))
     assert ignoring_staff.sent == []
 
 
 def test_id_set_from_env(monkeypatch):
-    monkeypatch.delenv("MESSAGE_LOG_IGNORE_CATEGORY_IDS", raising=False)
-    assert main.id_set_from_env("MESSAGE_LOG_IGNORE_CATEGORY_IDS") == set()
-    monkeypatch.setenv("MESSAGE_LOG_IGNORE_CATEGORY_IDS", " 12, 34 ,,staff ")
-    assert main.id_set_from_env("MESSAGE_LOG_IGNORE_CATEGORY_IDS") == {12, 34}
+    monkeypatch.delenv("MESSAGE_LOG_IGNORE_IDS", raising=False)
+    assert main.id_set_from_env("MESSAGE_LOG_IGNORE_IDS") == set()
+    monkeypatch.setenv("MESSAGE_LOG_IGNORE_IDS", " 12, 34 ,,staff, -5, +6 ")
+    assert main.id_set_from_env("MESSAGE_LOG_IGNORE_IDS") == {12, 34}

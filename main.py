@@ -52,16 +52,16 @@ def id_set_from_env(name):
         part = part.strip()
         if not part:
             continue
-        try:
+        if part.isascii() and part.isdigit():
             ids.add(int(part))
-        except ValueError:
+        else:
             print(f"Warning: {name} has an entry that isn't an ID ({len(part)} characters); ignoring it.")
     return ids
 
-# Categories (or single channels) whose edits and deletions are never posted to the log channel:
-# internal groups such as staff and national leads, where nothing needs moderating. A thread
-# counts as being in its parent channel's category.
-MESSAGE_LOG_IGNORE_CATEGORY_IDS = id_set_from_env('MESSAGE_LOG_IGNORE_CATEGORY_IDS')
+# Categories and channels whose edits and deletions are never posted to the log channel: internal
+# groups such as staff and national leads, where nothing needs moderating. A channel or thread is
+# left out if its own ID, its parent channel's or its category's is listed.
+MESSAGE_LOG_IGNORE_IDS = id_set_from_env('MESSAGE_LOG_IGNORE_IDS')
 
 ALLOWED_EXPORT_ROLE_ID = 1409324452545822793
 
@@ -981,6 +981,9 @@ def row_from_cached(message):
         "created_at": message.created_at,
     }
 
+# Upper bound on looking up a channel that isn't cached, so a slow Discord can't stall a post
+CHANNEL_LOOKUP_TIMEOUT = 10
+
 async def channel_or_thread(guild, channel_id):
     """The channel or thread, from the cache or else from Discord (archived threads often aren't
     cached), or None if it can't be found."""
@@ -988,30 +991,30 @@ async def channel_or_thread(guild, channel_id):
     if channel is not None:
         return channel
     try:
-        return await guild.fetch_channel(channel_id)
+        return await asyncio.wait_for(guild.fetch_channel(channel_id), CHANNEL_LOOKUP_TIMEOUT)
     except Exception as e:
-        print(f"Error looking up channel {channel_id}: {e}")
+        print(f"Couldn't look up channel {channel_id}, so its edit or deletion isn't posted: {e!r}")
         return None
 
 async def is_ignored_channel(guild_id, channel_id):
     """Whether channel_id, its parent channel (for a thread) or its category is in
-    MESSAGE_LOG_IGNORE_CATEGORY_IDS. A channel that can't be looked up counts as ignored, so a
-    lookup failure never posts an internal channel's messages."""
-    if not MESSAGE_LOG_IGNORE_CATEGORY_IDS:
+    MESSAGE_LOG_IGNORE_IDS. With the list set, a channel that can't be looked up counts as
+    ignored, so a lookup failure never posts an internal channel's messages."""
+    if not MESSAGE_LOG_IGNORE_IDS:
         return False
-    if channel_id in MESSAGE_LOG_IGNORE_CATEGORY_IDS:
+    if channel_id in MESSAGE_LOG_IGNORE_IDS:
         return True
     guild = bot.get_guild(guild_id)
     channel = await channel_or_thread(guild, channel_id) if guild else None
     if channel is None:
         return True
-    ids = {getattr(channel, "category_id", None)}
     if isinstance(channel, discord.Thread):
-        parent = await channel_or_thread(guild, channel.parent_id)
-        if parent is None:
+        # A thread's parent is a guild channel, always cached. (Thread.category_id raises when
+        # the parent isn't cached, so it isn't used.)
+        channel = guild.get_channel(channel.parent_id)
+        if channel is None:
             return True
-        ids |= {parent.id, parent.category_id}
-    return bool(ids & MESSAGE_LOG_IGNORE_CATEGORY_IDS)
+    return bool({channel.id, channel.category_id} & MESSAGE_LOG_IGNORE_IDS)
 
 async def post_to_log_channel(guild_id, channel_id, embeds):
     channel = log_channel_for(guild_id, channel_id)
