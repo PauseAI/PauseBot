@@ -21,6 +21,9 @@ CREATE TABLE IF NOT EXISTS message_log (
     edited_at timestamptz,
     deleted_at timestamptz
 );
+-- Whether a bot (or webhook) sent it, so the log channel can leave bots' messages out. Rows logged
+-- before this column was added read false.
+ALTER TABLE message_log ADD COLUMN IF NOT EXISTS author_bot boolean NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS message_log_created_at ON message_log (created_at);
 CREATE INDEX IF NOT EXISTS message_log_channel_created_at ON message_log (channel_id, created_at);
 CREATE INDEX IF NOT EXISTS message_log_author_created_at ON message_log (author_id, created_at);
@@ -33,6 +36,15 @@ CREATE TABLE IF NOT EXISTS message_edits (
     edited_at timestamptz NOT NULL
 );
 CREATE INDEX IF NOT EXISTS message_edits_message_id ON message_edits (message_id);
+
+-- PauseBot's posts in the log channel (MESSAGE_LOG_CHANNEL_ID), kept until the daily prune deletes
+-- each post once the oldest message it quotes passes the 30-day retention. Holds no message text.
+CREATE TABLE IF NOT EXISTS log_posts (
+    post_id bigint PRIMARY KEY,
+    channel_id bigint NOT NULL,
+    oldest_sent_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS log_posts_oldest_sent_at ON log_posts (oldest_sent_at);
 
 -- One row per Discord user the bot has seen (moved from Airtable's Discord table). Kept after they
 -- leave, so their roles can be given back if they rejoin.

@@ -46,15 +46,24 @@ async def latest_snapshot(pool, guild_id):
 
 # ── Message log ───────────────────────────────────────────────────────────────
 
-async def log_message(pool, *, message_id, guild_id, channel_id, author_id, content, attachments, created_at):
-    await pool.execute(
+async def log_message(pool, *, message_id, guild_id, channel_id, author_id, content, attachments, created_at,
+                      author_bot=False, deleted_at=None):
+    """Stores a message; a message already stored is left alone, except that a deletion is kept.
+    `deleted_at` is set for a message deleted before its log write landed, so whichever write
+    comes second, the row ends up marked deleted. Returns whether it inserted a row or marked one
+    deleted."""
+    result = await pool.execute(
         """
-        INSERT INTO message_log (message_id, guild_id, channel_id, author_id, content, attachments, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        ON CONFLICT (message_id) DO NOTHING
+        INSERT INTO message_log (message_id, guild_id, channel_id, author_id, content, attachments, created_at,
+                                 author_bot, deleted_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (message_id) DO UPDATE SET deleted_at = coalesce(message_log.deleted_at, EXCLUDED.deleted_at)
+            WHERE message_log.deleted_at IS NULL AND EXCLUDED.deleted_at IS NOT NULL
         """,
-        message_id, guild_id, channel_id, author_id, content, attachments, created_at,
+        message_id, guild_id, channel_id, author_id, content, attachments, created_at, author_bot, deleted_at,
     )
+    # The command tag ("INSERT 0 1") says whether a row was inserted or marked deleted
+    return result.endswith(" 1")
 
 
 async def log_edit(pool, message_id, content, edited_at, message=None):
@@ -65,20 +74,22 @@ async def log_edit(pool, message_id, content, edited_at, message=None):
     Edit events can be handled out of order, so one older than the stored edit is dropped.
 
     `message` holds the log_message fields other than content (guild_id, channel_id, author_id,
-    attachments, created_at). With it, an edit that arrives before its message was logged stores
+    attachments, created_at, and optionally author_bot). With it, an edit that arrives before its message was logged stores
     the message with the edited content; log_message then leaves that row alone."""
     async with pool.acquire() as conn:
         async with conn.transaction():
             if message is not None:
                 inserted = await conn.fetchval(
                     """
-                    INSERT INTO message_log (message_id, guild_id, channel_id, author_id, content, attachments, created_at, edited_at)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    INSERT INTO message_log (message_id, guild_id, channel_id, author_id, content, attachments, created_at,
+                                             edited_at, author_bot)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                     ON CONFLICT (message_id) DO NOTHING
                     RETURNING message_id
                     """,
                     message_id, message["guild_id"], message["channel_id"], message["author_id"],
                     content, message["attachments"], message["created_at"], edited_at,
+                    message.get("author_bot", False),
                 )
                 if inserted is not None:
                     return None
@@ -107,7 +118,7 @@ async def log_delete(pool, message_ids, deleted_at):
         """
         UPDATE message_log SET deleted_at = $2
         WHERE message_id = ANY($1::bigint[]) AND deleted_at IS NULL
-        RETURNING message_id, guild_id, channel_id, author_id, content, attachments, created_at
+        RETURNING message_id, guild_id, channel_id, author_id, content, attachments, created_at, author_bot
         """,
         list(message_ids), deleted_at,
     )
@@ -122,6 +133,25 @@ async def get_edits(pool, message_id):
         "SELECT content_before, edited_at FROM message_edits WHERE message_id = $1 ORDER BY edited_at, id",
         message_id,
     )
+
+
+async def record_log_post(pool, post_id, channel_id, oldest_sent_at):
+    """Remembers a log channel post and when the oldest message it quotes was sent."""
+    await pool.execute(
+        "INSERT INTO log_posts (post_id, channel_id, oldest_sent_at) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        post_id, channel_id, oldest_sent_at,
+    )
+
+
+async def expired_log_posts(pool, cutoff):
+    """Log channel posts quoting a message sent before cutoff, oldest first."""
+    return await pool.fetch(
+        "SELECT post_id, channel_id FROM log_posts WHERE oldest_sent_at < $1 ORDER BY oldest_sent_at", cutoff,
+    )
+
+
+async def forget_log_post(pool, post_id):
+    await pool.execute("DELETE FROM log_posts WHERE post_id = $1", post_id)
 
 
 # ── Discord members ───────────────────────────────────────────────────────────
