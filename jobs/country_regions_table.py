@@ -89,6 +89,13 @@ ONBOARDING_GROUPS = [
     ("Americas & Africa", ["Americas", "Africa"]),
 ]
 
+# With --members-only (only countries someone holds), two questions are enough, leaving room for two
+# other questions. Discord caps multiple-choice questions at 12 answers, so those can't absorb more.
+ONBOARDING_GROUPS_MEMBERS = [
+    ("Europe & Middle East", ["Europe", "Middle East"]),
+    ("Americas, Africa & Asia-Pacific", ["Americas", "Africa", "Asia-Pacific"]),
+]
+
 # Most populous first, for choosing which countries fit in a full onboarding question.
 POPULATION_ORDER = [
     "United States", "Brazil", "Nigeria", "Mexico", "Ethiopia", "Egypt", "DR Congo", "Tanzania",

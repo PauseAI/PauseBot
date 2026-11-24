@@ -543,8 +543,10 @@ def test_members_only_lists_just_countries_someone_holds(tmp_path):
     code, output = run(fake, "--onboarding", *MERGE, "--members-only", tmp_path=tmp_path)
     assert code == 0, output
     payload = json.loads((tmp_path / "onboarding.json").read_text())
-    group = next(p for p in payload["prompts"] if p["title"] == "Where are you? Americas & Africa")
+    assert [p["title"] for p in payload["prompts"] if p["title"].startswith("Where")] == [
+        "Where are you? Europe & Middle East", "Where are you? Americas, Africa & Asia-Pacific"]
+    group = payload["prompts"][2]
     titles = [o["title"] for o in group["options"]]
     assert "Ethiopia" not in titles and "Kenya" in titles and "Tunisia" in titles  # Tunisia: a National Leader
-    assert titles[-1] == "Somewhere else in Africa"
+    assert titles[-1] == "Somewhere else in Asia-Pacific"
     assert "countries with no members yet use 'Somewhere else'" in output and "answers in all" in output

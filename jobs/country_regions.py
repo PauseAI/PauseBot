@@ -30,7 +30,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # So running this file directly can import jobs.*
 
 from jobs.country_regions_table import (  # noqa: E402
-    COUNTRIES, ENDONYMS, EXTRA_CHANNELS, KEEP_OWN_OVERWRITES, ONBOARDING_GROUPS, POPULATION_ORDER, REGIONS,
+    COUNTRIES, ENDONYMS, EXTRA_CHANNELS, KEEP_OWN_OVERWRITES, ONBOARDING_GROUPS, ONBOARDING_GROUPS_MEMBERS,
+    POPULATION_ORDER, REGIONS,
     region_of,
 )
 
@@ -679,7 +680,7 @@ def build_onboarding(state, onboarding, ids=None, merge=None, renames=None, memb
     regional_prompts = []
     existing_options = {o["title"]: o for p in existing_regional.values() for o in p["options"]}
     rank = {c: i for i, c in enumerate(POPULATION_ORDER)}
-    for label, regions in ONBOARDING_GROUPS:
+    for label, regions in (ONBOARDING_GROUPS_MEMBERS if members_only else ONBOARDING_GROUPS):
         title = PROMPT_TITLE_PREFIX + label
         existing = existing_regional.get(title, {})
         in_group = [c for c in countries if region_of(c) in regions]
@@ -689,8 +690,10 @@ def build_onboarding(state, onboarding, ids=None, merge=None, renames=None, memb
             role = countries[country]
             return state.role_counts.get(role["id"], 0) > 0 or role["id"] in state.leader_held
         if members_only:
-            in_group_held = [c for c in in_group if held(c)]
-            chosen = set(sorted(in_group_held, key=lambda c: (rank.get(c, len(rank)), c))[:room])
+            chosen = {c for c in in_group if held(c)}
+            if len(chosen) > room:
+                raise Abort(f"'{title}' would list {len(chosen)} countries with members, over the {room} that fit. "
+                            "Time for the PauseBot country finder, or regroup ONBOARDING_GROUPS_MEMBERS.")
         elif len(in_group) > room:
             chosen = set(sorted(in_group, key=lambda c: (not held(c), rank.get(c, len(rank)), c))[:room])
         else:
@@ -990,7 +993,7 @@ def run_onboarding(http, state, args, out):
     payload, lines = build_onboarding(state, onboarding, merge=merge, renames=renames,
                                       members_only=args.members_only)
     total = sum(len(p["options"]) for p in payload["prompts"])
-    lines.append(f"  {total} answers in all (Discord accepted 105 and refused 162 on 24 Nov 2026)")
+    lines.append(f"  {total} answers in all")
     Path(args.onboarding_file).write_text(json.dumps(payload, indent=2, ensure_ascii=False))
     out(f"Wrote the new onboarding config to {args.onboarding_file}. Changes from the current one:")
     out("\n".join(lines))
