@@ -668,3 +668,16 @@ def test_an_administrator_bot_still_gets_the_role_hierarchy_warning(tmp_path):
 def test_state_held_counts_members_and_national_leaders():
     state = cr.State("1", [], [], role_counts={"a": 2, "b": 0}, leader_held={"c"})
     assert [state.held({"id": r}) for r in "abcd"] == [True, False, True, False]
+
+
+def test_kosovo_gets_its_regions_emoji_not_a_nonstandard_flag(tmp_path):
+    data = load_fixture()
+    data["roles"].append({"id": "2099", "name": "Kosovo", "position": 24, "permissions": "0"})
+    next(m for m in data["members"] if not m.get("bot"))["roles"].append("2099")
+    fake = FakeDiscord(data)
+    apply(fake, tmp_path)
+    code, output = run(fake, "--onboarding", *MERGE, "--members-only", tmp_path=tmp_path)
+    assert code == 0, output
+    payload = json.loads((tmp_path / "onboarding.json").read_text())
+    kosovo = next(o for p in payload["prompts"] for o in p["options"] if o["title"] == "Kosovo")
+    assert kosovo["emoji_name"] == cr.REGION_EMOJI["Europe"] and kosovo["emoji_name"] != cr.flag("XK")
