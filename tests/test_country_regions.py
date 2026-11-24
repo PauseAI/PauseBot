@@ -550,3 +550,121 @@ def test_members_only_lists_just_countries_someone_holds(tmp_path):
     assert "Ethiopia" not in titles and "Kenya" in titles and "Tunisia" in titles  # Tunisia: a National Leader
     assert titles[-1] == "Somewhere else in Asia-Pacific"
     assert "countries with no members yet use 'Somewhere else'" in output and "answers in all" in output
+
+
+# ---- Discord's onboarding limits ----
+
+def onboarding_puts(fake):
+    return [w[2] for w in fake.writes if w[0] == "PUT" and w[1].endswith("/onboarding")]
+
+
+def test_regional_questions_are_dropdowns_even_when_the_old_country_ones_were_multiple_choice(tmp_path):
+    fake = FakeDiscord()
+    apply(fake, tmp_path)
+    for prompt in fake.onboarding["prompts"]:
+        prompt["type"] = cr.MULTIPLE_CHOICE
+    code, output = run(fake, "--onboarding", *MERGE, tmp_path=tmp_path)
+    assert code == 0, output
+    payload = json.loads((tmp_path / "onboarding.json").read_text())
+    assert {p["type"] for p in payload["prompts"] if p["title"].startswith("Where")} == {cr.DROPDOWN}
+
+
+def test_merging_a_multiple_choice_question_past_12_answers_stops_before_sending(tmp_path):
+    fake = FakeDiscord()
+    apply(fake, tmp_path)
+    channel = fake.channel("welcome")["id"]
+    fake.onboarding["prompts"][-1]["options"] += [
+        {"id": str(8200 + i), "title": f"Source {i}", "description": None, "role_ids": [], "channel_ids": [channel],
+         "emoji": None} for i in range(11)]
+    code, output = run(fake, "--onboarding", "--apply-onboarding", *MERGE, tmp_path=tmp_path)
+    assert code == 1
+    assert "'What do you want to help with?' is a multiple-choice question with 13 answers" in output
+    assert onboarding_puts(fake) == []
+
+
+def test_merge_question_not_found_stops_and_says_why(tmp_path):
+    fake, before, payload, output = onboarding_after_apply(tmp_path, "--apply-onboarding")
+    puts = len(onboarding_puts(fake))
+    code, output = run(fake, "--onboarding", "--apply-onboarding", *MERGE, tmp_path=tmp_path)
+    assert code == 1
+    assert "no question titled 'How did you hear about us?'" in output
+    assert "drop --merge-question if it was merged on an earlier run" in output
+    assert len(onboarding_puts(fake)) == puts
+
+
+def test_restore_onboarding_leaves_out_hidden_default_channels(tmp_path):
+    fake, before, payload, output = onboarding_after_apply(tmp_path, "--apply-onboarding")
+    welcome = fake.channel("welcome")
+    assert welcome["id"] in before["default_channel_ids"]
+    welcome["permission_overwrites"] = [{"id": fake.guild_id, "type": 0, "allow": "0", "deny": "1024"}]
+    code, output = run(fake, "--restore-onboarding", str(tmp_path / "backup.json"), "--apply", tmp_path=tmp_path)
+    assert code == 0, output
+    assert welcome["id"] not in onboarding_puts(fake)[-1]["default_channel_ids"]
+    assert "Leave out default channels @everyone can't see" in output and "#welcome" in output
+
+
+def test_restore_onboarding_checks_discords_limits_before_sending(tmp_path):
+    fake = FakeDiscord()
+    apply(fake, tmp_path)
+    backup = json.loads((tmp_path / "backup.json").read_text())
+    backup["onboarding"]["prompts"].append(dict(backup["onboarding"]["prompts"][0], id="7099", title="Fifth"))
+    (tmp_path / "backup.json").write_text(json.dumps(backup))
+    code, output = run(fake, "--restore-onboarding", str(tmp_path / "backup.json"), "--apply", tmp_path=tmp_path)
+    assert code == 1 and "5 questions, over Discord's 4" in output
+    assert onboarding_puts(fake) == []
+
+
+def test_from_file_sends_the_reviewed_file_as_it_is(tmp_path):
+    fake, before, payload, output = onboarding_after_apply(tmp_path)
+    path = tmp_path / "onboarding.json"
+    payload["prompts"][1]["title"] = "Where are you? Europe (edited by hand)"
+    path.write_text(json.dumps(payload))
+    reviewed = path.read_text()
+    code, output = run(fake, "--onboarding", "--apply-onboarding", "--from-file", str(path), tmp_path=tmp_path)
+    assert code == 0, output
+    assert onboarding_puts(fake) == [payload]
+    assert path.read_text() == reviewed  # Not rebuilt or rewritten
+    assert list(tmp_path.glob("backup-onboarding-*.json"))
+
+
+def test_from_file_checks_discords_limits_before_sending(tmp_path):
+    fake, before, payload, output = onboarding_after_apply(tmp_path)
+    path = tmp_path / "onboarding.json"
+    payload["prompts"][0]["options"] *= 7  # Multiple choice, 14 answers
+    path.write_text(json.dumps(payload))
+    code, output = run(fake, "--onboarding", "--apply-onboarding", "--from-file", str(path), tmp_path=tmp_path)
+    assert code == 1 and "multiple-choice question with 14 answers" in output
+    assert onboarding_puts(fake) == []
+
+
+def test_from_file_with_a_hidden_default_channel_stops(tmp_path):
+    fake, before, payload, output = onboarding_after_apply(tmp_path)
+    fake.channel("welcome")["permission_overwrites"] = [
+        {"id": fake.guild_id, "type": 0, "allow": "0", "deny": "1024"}]
+    code, output = run(fake, "--onboarding", "--apply-onboarding", "--from-file", str(tmp_path / "onboarding.json"),
+                       tmp_path=tmp_path)
+    assert code == 1 and "#welcome" in output
+    assert onboarding_puts(fake) == []
+
+
+def test_from_file_needs_apply_onboarding(tmp_path):
+    with pytest.raises(SystemExit):
+        run(FakeDiscord(), "--onboarding", "--from-file", "x.json", tmp_path=tmp_path)
+
+
+# ---- The bot's permissions ----
+
+def test_an_administrator_bot_still_gets_the_role_hierarchy_warning(tmp_path):
+    data = load_fixture()
+    bot_role = next(r for r in data["roles"] if r["name"] == "PauseBot")
+    bot_role["permissions"] = str(int(bot_role["permissions"]) | cr.ADMINISTRATOR)
+    next(r for r in data["roles"] if r["name"] == "Dominian Republic")["position"] = bot_role["position"] + 1
+    code, output = run(FakeDiscord(data), tmp_path=tmp_path)
+    assert code == 0, output
+    assert "highest role is below 'Dominian Republic'" in output
+    assert "missing" not in output
+
+
+def test_state_held_counts_members_and_national_leaders():
+    state = cr.State("1", [], [], role_counts={"a": 2, "b": 0}, leader_held={"c"})
+    assert [state.held({"id": r}) for r in "abcd"] == [True, False, True, False]

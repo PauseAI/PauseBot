@@ -138,7 +138,7 @@ To capture the dashboard settings as a file later, run `railway config pull` wit
 5. Posts a welcome in each new country channel, pinging only that country's role.
 6. Deletes the two old categories, only once they're empty. It deletes nothing else.
 
-Onboarding is a separate step. Discord allows at most 4 questions with 50 answers each, so it replaces the country questions with three optional multi-select ones: "Where are you? Europe", "Where are you? Middle East & Asia-Pacific" and "Where are you? Americas & Africa" (`ONBOARDING_GROUPS` in the table). Each country option gives its role and its channel, with the country's own name as the description where the old option had none. Each region ends with "Somewhere else in <region>", which gives only `other-<region>`. A group with more countries than fit lists those with members first, then the most populous; the rest use "Somewhere else". To stay within 4 questions, merge one of the other questions into another with `--merge-question "<title>" --into "<title>"` (options that give nothing are dropped; rename one with `--rename-option "Yes=I want to volunteer"`). Default channels @everyone can't see are left out, as Discord refuses them. On the live server use `--members-only`: Discord caps multiple-choice questions at 12 answers, so the interests and volunteering questions can't be merged, and only two country questions fit ("Europe & Middle East", "Americas, Africa & Asia-Pacific"), listing only countries someone holds the role of. The rest use "Somewhere else". It stops if a question would pass 50. Every other question, the default channels and the onboarding settings are carried over unchanged, since Discord replaces the whole onboarding config at once.
+Onboarding is a separate step. Discord allows at most 4 questions; a dropdown question can have 50 answers and a multiple-choice one only 12. So it replaces the country questions with three optional multi-select dropdowns: "Where are you? Europe", "Where are you? Middle East & Asia-Pacific" and "Where are you? Americas & Africa" (`ONBOARDING_GROUPS` in the table). Each country option gives its role and its channel, with the country's own name as the description where the old option had none. Each region ends with "Somewhere else in <region>", which gives only `other-<region>`. A group with more countries than fit lists those with members first, then the most populous; the rest use "Somewhere else". To stay within 4 questions, merge one of the other questions into another with `--merge-question "<title>" --into "<title>"` (options that give nothing are dropped; rename one with `--rename-option "Yes=I want to volunteer"`). On the live server use `--members-only`: Discord caps multiple-choice questions at 12 answers, so the interests and volunteering questions can't be merged, and only two country questions fit ("Europe & Middle East", "Americas, Africa & Asia-Pacific"), listing only countries someone holds the role of. The rest use "Somewhere else". Before sending anything it stops if onboarding would have more than 4 questions, a dropdown more than 50 answers, or a multiple-choice question more than 12 (for example after `--merge-question` into one). `--merge-question` also stops if the question to merge isn't there: check the title, or leave it out if an earlier run already merged it. Every other question and the onboarding settings are carried over unchanged, since Discord replaces the whole onboarding config at once; so are the default channels, except any @everyone can't see, which are left out and listed.
 
 Everything is read from the live server on each run, so after a partial failure, run it again: steps already done are skipped. The script needs only Python 3 (no packages) and reads the token from `DISCORD_TOKEN`, which it never prints.
 
@@ -181,13 +181,19 @@ Everything is read from the live server on each run, so after a partial failure,
 
    If a country question also has an option giving a role that isn't a country in the table, it stops and names the option, so nothing is lost: move that option to another question by hand, or add the country to the table. Options that give no role (such as a "not listed? ask here" one) are dropped, and listed.
 
-4. Read `onboarding_new.json`, then send it to Discord. It saves the current config to `country_regions_backup-onboarding-<time>.json` first:
+4. Read `onboarding_new.json`, then send exactly that file to Discord. With `--from-file` it sends the file as it is, after the same limit checks, instead of building it again from the live server (which may have changed since you read it), and leaves the file alone. It saves the current config to `country_regions_backup-onboarding-<time>.json` first:
 
    ```bash
-   python3 jobs/country_regions.py --onboarding --apply-onboarding
+   python3 jobs/country_regions.py --onboarding --apply-onboarding --from-file onboarding_new.json
    ```
 
-   Discord's API docs don't give a limit on how many questions or options per question onboarding can have. The script stops itself over 15 questions or 50 options. If Discord's real limit is lower, Discord rejects the whole change and onboarding stays as it was.
+   Without `--from-file` it builds the config again and sends that; then give it the same options as step 3:
+
+   ```bash
+   python3 jobs/country_regions.py --onboarding --apply-onboarding --members-only
+   ```
+
+   The limits above aren't in Discord's API docs; they're what Discord refused on 24 November 2026. If Discord rejects the change anyway, it rejects all of it and onboarding stays as it was.
 
 **After the run**
 
@@ -198,7 +204,7 @@ Everything is read from the live server on each run, so after a partial failure,
 
 **Rollback** (each is a dry run without `--apply`, and needs the same permissions as the run)
 
-- Put the onboarding back as it was:
+- Put the onboarding back as it was. Default channels @everyone can no longer see are left out (and listed), and it stops before sending if the saved config breaks the limits above:
 
   ```bash
   python3 jobs/country_regions.py --restore-onboarding country_regions_backup.json --apply

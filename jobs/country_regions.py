@@ -8,6 +8,7 @@ Manage Channels, Manage Roles, Manage Server and Mention @everyone. See the READ
     python jobs/country_regions.py --apply               # makes the channel and role changes
     python jobs/country_regions.py --onboarding          # writes the new onboarding config to a file
     python jobs/country_regions.py --onboarding --apply-onboarding   # and sends it to Discord
+    python jobs/country_regions.py --onboarding --apply-onboarding --from-file onboarding_new.json
     python jobs/country_regions.py --restore-layout country_regions_backup.json [--apply]
     python jobs/country_regions.py --restore-onboarding country_regions_backup.json [--apply]
 
@@ -50,11 +51,12 @@ MANAGE_ROLES = 1 << 28
 # Discord's channel limits: 50 per category (in the channel docs), 500 per server.
 MAX_PER_CATEGORY = 50
 MAX_PER_GUILD = 500
-# Discord's API docs (checked 22 Nov 2026) give no limit on onboarding questions or options per
-# question; these are the limits Discord's own onboarding editor applies, as far as we know. If
-# Discord's real limit is lower it rejects the whole PUT and onboarding stays as it was.
-MAX_PROMPTS = 4  # Discord rejects more (TOO_MANY_ONBOARDING_PROMPTS, 24 Nov 2026)
-MAX_OPTIONS_PER_PROMPT = 50
+# Onboarding limits, learned from Discord rejecting PUTs on the live server on 24 Nov 2026 (the API docs
+# don't give them). Discord rejects the whole PUT if one is passed, and onboarding stays as it was.
+MAX_PROMPTS = 4  # TOO_MANY_ONBOARDING_PROMPTS
+MULTIPLE_CHOICE, DROPDOWN = 0, 1  # Onboarding question types
+MAX_OPTIONS_PER_PROMPT = 50  # A dropdown question's answers
+MAX_MULTIPLE_CHOICE_OPTIONS = 12  # A multiple-choice question's answers
 
 OLD_CATEGORY_KEYS = ["COUNTRIES", "COUNTRIES+"]
 REGION_CATEGORY_NAMES = {
@@ -192,6 +194,10 @@ class State:
         return sorted((c for c in self.channels.values() if c.get("parent_id") == category_id),
                       key=lambda c: (c["position"], int_id(c["id"])))
 
+    def held(self, role):
+        """Whether anyone has the role, counting a National Leader's roles as held."""
+        return self.role_counts.get(role["id"], 0) > 0 or role["id"] in self.leader_held
+
     def country_roles(self):
         """{country name: role} for every role named in the region table."""
         return {r["name"]: r for r in self.roles.values() if region_of(r["name"])}
@@ -314,8 +320,7 @@ def plan_restructure(state, out=print, all_countries=False):
             if region_of(country) != region:
                 continue
             name = slug(country)
-            wanted = (all_countries or name in pool or state.role_counts.get(role["id"], 0) > 0
-                      or role["id"] in state.leader_held)
+            wanted = all_countries or name in pool or state.held(role)
             if not wanted:
                 continue
             if name not in pool and name in outside:
@@ -397,8 +402,7 @@ def restructure(run, plan, original_channel_ids):
                 channel = find_child(state, categories[region]["id"], name)
                 # A role nobody holds yet has no one to welcome (--all-countries makes these channels)
                 if (role and channel and channel["id"] not in original_channel_ids
-                        and not channel.get("last_message_id")
-                        and (state.role_counts.get(role["id"], 0) > 0 or role["id"] in state.leader_held)):
+                        and not channel.get("last_message_id") and state.held(role)):
                     content = f"<@&{role['id']}>: {WELCOME_MARK}. Say hello to everyone else from {role['name']}!"
                     run.change(f"Post welcome in #{name} mentioning @{role['name']}", "POST",
                                f"/channels/{channel['id']}/messages",
@@ -558,16 +562,15 @@ def check_bot(http, state, run, onboarding=False):
     perms = 0
     for role in roles:
         perms |= int(role["permissions"])
-    if perms & ADMINISTRATOR:
-        run.can_mention_all = True
-        return
+    admin = bool(perms & ADMINISTRATOR)
     needed = {"Manage Channels": MANAGE_CHANNELS, "Manage Roles": MANAGE_ROLES}
     if onboarding:
         needed["Manage Server"] = MANAGE_GUILD
-    missing = [name for name, bit in needed.items() if not perms & bit]
+    missing = [name for name, bit in needed.items() if not admin and not perms & bit]
     if missing:
         run.warn(f"The bot is missing {', '.join(missing)}; --apply will fail until its role has them.")
-    run.can_mention_all = bool(perms & MENTION_EVERYONE)
+    run.can_mention_all = admin or bool(perms & MENTION_EVERYONE)
+    # Administrator doesn't lift the role hierarchy: the bot still can't edit a role above its own
     top = max((r["position"] for r in roles), default=0)
     for old_name in ROLE_RENAMES:
         role = state.role_named(old_name)
@@ -638,6 +641,36 @@ def everyone_can_view(state, channel_id):
     return allowed
 
 
+def drop_hidden_defaults(state, onboarding):
+    """The onboarding config without default channels @everyone can't see (Discord refuses them),
+    and a line naming those it left out (or None)."""
+    defaults, hidden = [], []
+    for channel_id in onboarding.get("default_channel_ids", []):
+        (defaults if everyone_can_view(state, channel_id) else hidden).append(channel_id)
+    line = None
+    if hidden:
+        line = ("  Leave out default channels @everyone can't see (Discord requires it): "
+                + ", ".join(f"#{state.channels[c]['name']}" if c in state.channels
+                            else f"{c} (hidden from the bot)" for c in hidden))
+    return dict(onboarding, default_channel_ids=defaults), line
+
+
+def check_onboarding(payload):
+    """Stops before sending a config Discord would reject. Raises Abort."""
+    prompts = payload["prompts"]
+    if len(prompts) > MAX_PROMPTS:
+        raise Abort(f"Onboarding would have {len(prompts)} questions, over Discord's {MAX_PROMPTS}: "
+                    + ", ".join(f"'{p['title']}'" for p in prompts)
+                    + ". Merge one into another with --merge-question.")
+    for p in prompts:
+        if p.get("type", MULTIPLE_CHOICE) == MULTIPLE_CHOICE and len(p["options"]) > MAX_MULTIPLE_CHOICE_OPTIONS:
+            raise Abort(f"'{p['title']}' is a multiple-choice question with {len(p['options'])} answers, over "
+                        f"Discord's {MAX_MULTIPLE_CHOICE_OPTIONS} for multiple choice. Nothing was sent.")
+        if len(p["options"]) > MAX_OPTIONS_PER_PROMPT:
+            raise Abort(f"'{p['title']}' would have {len(p['options'])} answers, over Discord's "
+                        f"{MAX_OPTIONS_PER_PROMPT}. Nothing was sent.")
+
+
 def is_country_prompt(prompt, country_role_ids):
     return any(r in country_role_ids for o in prompt["options"] for r in o.get("role_ids", []))
 
@@ -687,8 +720,7 @@ def build_onboarding(state, onboarding, ids=None, merge=None, renames=None, memb
         room = MAX_OPTIONS_PER_PROMPT - len(regions)  # one "Somewhere else" per region
 
         def held(country):
-            role = countries[country]
-            return state.role_counts.get(role["id"], 0) > 0 or role["id"] in state.leader_held
+            return state.held(countries[country])
         if members_only:
             chosen = {c for c in in_group if held(c)}
             if len(chosen) > room:
@@ -731,7 +763,7 @@ def build_onboarding(state, onboarding, ids=None, merge=None, renames=None, memb
             raise Abort(f"'{title}' would have {len(options)} options, over {MAX_OPTIONS_PER_PROMPT}.")
         regional_prompts.append({
             "id": existing.get("id") or next(ids),
-            "type": template.get("type", 0),
+            "type": DROPDOWN,  # Multiple choice allows only 12 answers
             "title": title,
             "single_select": False,
             "required": False,
@@ -752,36 +784,27 @@ def build_onboarding(state, onboarding, ids=None, merge=None, renames=None, memb
         kept = kept_before + kept_after
         source = next((p for p in kept if p["title"] == source_title), None)
         target = next((p for p in kept if p["title"] == target_title), None)
-        if source is None and target is not None:
-            pass  # Merged on an earlier run
-        elif source is None or target is None:
-            raise Abort(f"Can't merge: no question titled '{source_title if source is None else target_title}'.")
-        else:
-            taken = {o["title"] for o in target["options"]}
-            for option in source["options"]:
-                if not option.get("role_ids") and not option.get("channel_ids"):
-                    merge_lines.append(f"  Drop '{option['title']}' from '{source_title}' (gives nothing)")
-                    continue
-                option = dict(option, title=renames.get(option["title"], option["title"]))
-                if option["title"] in taken:
-                    continue
-                target["options"].append(option)
-                merge_lines.append(f"  Add '{option['title']}' to '{target_title}' (from '{source_title}')")
-            kept_before = [p for p in kept_before if p is not source]
-            kept_after = [p for p in kept_after if p is not source]
-            merge_lines.append(f"  Remove question '{source_title}' (merged into '{target_title}')")
+        if source is None:
+            raise Abort(f"Can't merge: no question titled '{source_title}'. Check the title, or drop "
+                        "--merge-question if it was merged on an earlier run.")
+        if target is None:
+            raise Abort(f"Can't merge: no question titled '{target_title}'.")
+        taken = {o["title"] for o in target["options"]}
+        for option in source["options"]:
+            if not option.get("role_ids") and not option.get("channel_ids"):
+                merge_lines.append(f"  Drop '{option['title']}' from '{source_title}' (gives nothing)")
+                continue
+            option = dict(option, title=renames.get(option["title"], option["title"]))
+            if option["title"] in taken:
+                continue
+            target["options"].append(option)
+            merge_lines.append(f"  Add '{option['title']}' to '{target_title}' (from '{source_title}')")
+        kept_before = [p for p in kept_before if p is not source]
+        kept_after = [p for p in kept_after if p is not source]
+        merge_lines.append(f"  Remove question '{source_title}' (merged into '{target_title}')")
     new_prompts = kept_before + regional_prompts + kept_after
-    if len(new_prompts) > MAX_PROMPTS:
-        raise Abort(f"Onboarding would have {len(new_prompts)} questions, over Discord's {MAX_PROMPTS}: "
-                    + ", ".join(f"'{p['title']}'" for p in new_prompts)
-                    + ". Merge one into another with --merge-question.")
-    if any(len(p["options"]) > MAX_OPTIONS_PER_PROMPT for p in new_prompts):
-        raise Abort(f"A question would have over {MAX_OPTIONS_PER_PROMPT} options.")
-
-    defaults, hidden = [], []
-    for channel_id in onboarding.get("default_channel_ids", []):
-        (defaults if everyone_can_view(state, channel_id) else hidden).append(channel_id)
-    onboarding = dict(onboarding, default_channel_ids=defaults)
+    check_onboarding({"prompts": new_prompts})
+    onboarding, hidden_line = drop_hidden_defaults(state, onboarding)
 
     lines = [f"  Remove question '{p['title']}' ({len(p['options'])} options)" for p in country_prompts
              if p["title"] not in existing_regional]
@@ -792,10 +815,8 @@ def build_onboarding(state, onboarding, ids=None, merge=None, renames=None, memb
     lines += summary
     lines += merge_lines
     lines += [f"  Keep question '{p['title']}'" for p in kept_before + kept_after]
-    if hidden:
-        lines.append("  Leave out default channels @everyone can't see (Discord requires it): "
-                     + ", ".join(f"#{state.channels[c]['name']}" if c in state.channels
-                                 else f"{c} (hidden from the bot)" for c in hidden))
+    if hidden_line:
+        lines.append(hidden_line)
     lines.append(f"  Keep {len(onboarding.get('default_channel_ids', []))} default channels, "
                  f"enabled={onboarding.get('enabled')}, mode={onboarding.get('mode')}")
     if not country_prompts:
@@ -916,10 +937,12 @@ def main(argv=None, http=None, out=print, env=os.environ):
     parser.add_argument("--merge-question", metavar="TITLE", help="with --onboarding: move this question's options "
                         "into the one named by --into, so onboarding stays within Discord's 4 questions")
     parser.add_argument("--members-only", action="store_true", help="with --onboarding: list only countries "
-                        "someone holds the role of (Discord limits answers across all questions)")
+                        "someone holds the role of, so the country questions fit in fewer questions")
     parser.add_argument("--into", metavar="TITLE", help="the question --merge-question's options go into")
     parser.add_argument("--rename-option", metavar="OLD=NEW", action="append", default=[],
                         help="rename a merged option, e.g. 'Yes=I want to volunteer'")
+    parser.add_argument("--from-file", metavar="FILE", help="with --onboarding --apply-onboarding: send this "
+                        "reviewed config as it is, instead of building it again")
     parser.add_argument("--restore-layout", metavar="BACKUP", help="move channels back as in BACKUP")
     parser.add_argument("--restore-onboarding", metavar="BACKUP", help="put onboarding back as in BACKUP")
     parser.add_argument("--backup", default="country_regions_backup.json")
@@ -933,6 +956,11 @@ def main(argv=None, http=None, out=print, env=os.environ):
         parser.error("--merge-question and --into go together")
     if any("=" not in r for r in args.rename_option):
         parser.error("--rename-option takes OLD=NEW")
+    if args.from_file and not args.apply_onboarding:
+        parser.error("--from-file goes with --onboarding --apply-onboarding")
+    if args.from_file and (args.merge_question or args.rename_option or args.members_only):
+        parser.error("--from-file sends the file as it is: leave out --merge-question, --rename-option "
+                     "and --members-only")
 
     if http is None:
         token = env.get("DISCORD_TOKEN")
@@ -946,8 +974,11 @@ def main(argv=None, http=None, out=print, env=os.environ):
         if args.restore_onboarding:
             backup = json.loads(Path(args.restore_onboarding).read_text())
             run = Run(http, state, args.apply, out)
-            payload = onboarding_payload(backup["onboarding"],
-                                         [to_put_prompt(p) for p in backup["onboarding"].get("prompts", [])])
+            onboarding, hidden_line = drop_hidden_defaults(state, backup["onboarding"])
+            payload = onboarding_payload(onboarding, [to_put_prompt(p) for p in onboarding.get("prompts", [])])
+            if hidden_line:
+                out(hidden_line)
+            check_onboarding(payload)
             run.change(f"Put onboarding back as saved at {backup['saved_at']} "
                        f"({len(payload['prompts'])} questions)", "PUT", f"/guilds/{args.guild}/onboarding", payload)
             summarise(run)
@@ -988,15 +1019,26 @@ def run_onboarding(http, state, args, out):
     run = Run(http, state, args.apply_onboarding, out)
     check_bot(http, state, run, onboarding=True)
     onboarding = http.request("GET", f"/guilds/{args.guild}/onboarding")
-    merge = (args.merge_question, args.into) if args.merge_question else None
-    renames = dict(r.split("=", 1) for r in args.rename_option)
-    payload, lines = build_onboarding(state, onboarding, merge=merge, renames=renames,
-                                      members_only=args.members_only)
-    total = sum(len(p["options"]) for p in payload["prompts"])
-    lines.append(f"  {total} answers in all")
-    Path(args.onboarding_file).write_text(json.dumps(payload, indent=2, ensure_ascii=False))
-    out(f"Wrote the new onboarding config to {args.onboarding_file}. Changes from the current one:")
-    out("\n".join(lines))
+    if args.from_file:
+        # Exactly what was reviewed: checked, never rebuilt or rewritten
+        payload = json.loads(Path(args.from_file).read_text())
+        check_onboarding(payload)
+        hidden = drop_hidden_defaults(state, payload)[1]
+        if hidden:
+            raise Abort(f"{args.from_file} has default channels @everyone can't see, which Discord refuses. "
+                        f"Build it again without --from-file.\n{hidden}")
+        out(f"Sending {args.from_file} as it is ({len(payload['prompts'])} questions: "
+            + ", ".join(f"'{p['title']}'" for p in payload["prompts"]) + ").")
+    else:
+        merge = (args.merge_question, args.into) if args.merge_question else None
+        renames = dict(r.split("=", 1) for r in args.rename_option)
+        payload, lines = build_onboarding(state, onboarding, merge=merge, renames=renames,
+                                          members_only=args.members_only)
+        total = sum(len(p["options"]) for p in payload["prompts"])
+        lines.append(f"  {total} answers in all")
+        Path(args.onboarding_file).write_text(json.dumps(payload, indent=2, ensure_ascii=False))
+        out(f"Wrote the new onboarding config to {args.onboarding_file}. Changes from the current one:")
+        out("\n".join(lines))
     if not args.apply_onboarding:
         out("\nRead it, then run again with --apply-onboarding to send it to Discord.")
         return 0
