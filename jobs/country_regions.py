@@ -261,8 +261,9 @@ class Plan:
         self.guide = None
 
 
-def plan_restructure(state, out=print):
-    """Checks the server and works out the target layout, before anything changes. Raises Abort."""
+def plan_restructure(state, out=print, all_countries=False):
+    """Checks the server and works out the target layout, before anything changes. Raises Abort.
+    all_countries: a channel for every country role in the table, not only those with members."""
     plan = Plan()
     for key in OLD_CATEGORY_KEYS:
         if (category := state.category(key)):
@@ -311,7 +312,7 @@ def plan_restructure(state, out=print):
             if region_of(country) != region:
                 continue
             name = slug(country)
-            wanted = (name in pool or state.role_counts.get(role["id"], 0) > 0
+            wanted = (all_countries or name in pool or state.role_counts.get(role["id"], 0) > 0
                       or role["id"] in state.leader_held)
             if not wanted:
                 continue
@@ -392,8 +393,10 @@ def restructure(run, plan, original_channel_ids):
         for region in REGIONS:
             for name, role in plan.regions[region]:
                 channel = find_child(state, categories[region]["id"], name)
+                # A role nobody holds yet has no one to welcome (--all-countries makes these channels)
                 if (role and channel and channel["id"] not in original_channel_ids
-                        and not channel.get("last_message_id")):
+                        and not channel.get("last_message_id")
+                        and (state.role_counts.get(role["id"], 0) > 0 or role["id"] in state.leader_held)):
                     content = f"<@&{role['id']}>: {WELCOME_MARK}. Say hello to everyone else from {role['name']}!"
                     run.change(f"Post welcome in #{name} mentioning @{role['name']}", "POST",
                                f"/channels/{channel['id']}/messages",
@@ -824,6 +827,8 @@ def summarise(run, plan=None, state=None):
 def main(argv=None, http=None, out=print, env=os.environ):
     parser = argparse.ArgumentParser(description="Restructure country channels into regional categories.")
     parser.add_argument("--apply", action="store_true", help="make the changes (default: dry run)")
+    parser.add_argument("--all-countries", action="store_true",
+                        help="a channel for every country role in the table, even with no members yet")
     parser.add_argument("--onboarding", action="store_true", help="build the new onboarding config")
     parser.add_argument("--onboarding-file", default="onboarding_new.json")
     parser.add_argument("--apply-onboarding", action="store_true", help="with --onboarding: send it to Discord")
@@ -867,7 +872,7 @@ def main(argv=None, http=None, out=print, env=os.environ):
         run = Run(http, state, args.apply, out)
         check_bot(http, state, run)
         onboarding = http.request("GET", f"/guilds/{args.guild}/onboarding")
-        plan = plan_restructure(state, out)
+        plan = plan_restructure(state, out, all_countries=args.all_countries)
         out(("Applying" if args.apply else "Dry run: these are the changes --apply would make") + ":")
         if args.apply:
             original_ids = save_backup(args.backup, backup_data(http, state, onboarding), out)

@@ -166,6 +166,13 @@ Everything is read from the live server on each run, so after a partial failure,
    python3 jobs/country_regions.py --apply
    ```
 
+   To give every country in the table its own channel now, not only those with members, rerun with `--all-countries` (dry run first, then add `--apply`). Countries nobody has picked yet get a channel but no welcome. Europe then has exactly 50 channels, Discord's limit for a category; the script stops rather than go over.
+
+   ```bash
+   python3 jobs/country_regions.py --all-countries
+   python3 jobs/country_regions.py --all-countries --apply
+   ```
+
 3. Build the new onboarding config. This writes it to `onboarding_new.json` and lists what changes, without sending anything:
 
    ```bash

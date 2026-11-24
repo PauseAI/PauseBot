@@ -454,3 +454,27 @@ def test_http_retries_reads_after_a_timeout(monkeypatch):
 
     monkeypatch.setattr(cr.urllib.request, "urlopen", urlopen)
     assert cr.DiscordHTTP("t", sleep=lambda s: None).request("GET", "/x") == []
+
+
+def test_all_countries_makes_a_channel_for_every_country_role_without_welcoming_empty_ones(tmp_path):
+    fake = FakeDiscord()
+    code, output = run(fake, "--apply", "--all-countries", tmp_path=tmp_path)
+    assert code == 0, output
+    # Ethiopia has a role but no members: a channel now, but no welcome
+    assert fake.children("🌍 AFRICA") == ["ethiopia", "kenya", "tunisia", "other-africa"]
+    assert fake.channel("ethiopia")["id"] not in fake.messages
+    welcomed = {fake.channels[cid]["name"] for cid in fake.messages if not fake.channels[cid]["name"].startswith("request")}
+    assert welcomed == {"kenya", "russia", "dominican-republic", "tunisia"}
+    # Non-country roles still get nothing
+    assert not any(c["name"] == "california" for c in fake.channels.values())
+
+
+def test_all_countries_after_a_first_run_only_adds_the_empty_ones(tmp_path):
+    fake = FakeDiscord()
+    apply(fake, tmp_path)
+    before = {c["id"] for c in fake.channels.values()}
+    code, output = run(fake, "--apply", "--all-countries", tmp_path=tmp_path)
+    assert code == 0, output
+    added = [c["name"] for c in fake.channels.values() if c["id"] not in before]
+    assert added == ["ethiopia"]
+    assert "Post welcome" not in output
