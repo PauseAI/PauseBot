@@ -190,7 +190,9 @@ limiter = ChangeLimiter()
 
 
 def parse(custom_id):
-    """('region', index) / ('pick', index, page) for a finder custom_id, else None."""
+    """('region', index), ('pick', index, page) for a member's own copy, or ('add', index, page) for
+    the shared post, from a finder custom_id; else None. The page isn't checked against today's split:
+    a post made before a table change still names the page it was split into then."""
     parts = (custom_id or "").split(":")
     if not parts or parts[0] != PREFIX:
         return None
@@ -200,7 +202,7 @@ def parse(custom_id):
             return ("region", index) if 0 <= index < len(REGIONS) else None
         if parts[1] in ("pick", "add") and len(parts) == 4:
             index, page = int(parts[2]), int(parts[3])
-            if 0 <= index < len(REGIONS) and 0 <= page < len(region_pages(REGIONS[index])):
+            if 0 <= index < len(REGIONS) and 0 <= page < 5:  # at most 5 dropdowns in a message
                 return (parts[1], index, page)
     except (IndexError, ValueError):
         pass
@@ -227,38 +229,65 @@ async def handle_interaction(interaction, is_safe):
         return True
 
     kind, index, page = parsed
-    chosen = [v for v in (interaction.data or {}).get("values", []) if v in roles]
-    page_names = [n for n in region_pages(REGIONS[index])[page] if n in roles]
-    add, remove = changes(held, page_names, chosen)
+    region = REGIONS[index]
+    values = [v for v in (interaction.data or {}).get("values", []) if v in COUNTRIES[region]]
+    chosen = [v for v in values if v in roles]
+    unavailable = [v for v in values if v not in roles]
     if kind == "add":
-        # The shared post: an unticked country there says nothing about the member, so nothing is removed
-        remove = []
-    # Each role is its own API call, which can outlast Discord's 3 seconds for a first answer. The
-    # shared post is answered with a new private message; a member's own copy is edited in place.
-    if kind == "add":
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        # The shared post: an unticked country there says nothing about the member, so nothing is
+        # removed. Answered by redrawing it, which clears the member's ticks there and picks up any
+        # role made since it was posted; the member's own copy follows as a private message.
+        add, remove = sorted(set(chosen) - held), []
+        await interaction.response.edit_message(view=region_view(index, roles, set(), shared=True))
     else:
+        # The countries this dropdown lists, as it was drawn: a copy opened before a table change
+        # still means its own options
+        add, remove = changes(held, dropdown_options(interaction, roles) or
+                              [n for n in (region_pages(region) + [[]] * 5)[page] if n in roles], chosen)
+        # Each role is its own API call, which can outlast Discord's 3 seconds for a first answer
         await interaction.response.defer()
-    if not add and not remove:
-        status = "No change."
-    elif not limiter.allow(member.id, len(add) + len(remove)):
-        status = (f"That's more changes than I can make right now (up to {CHANGE_LIMIT} countries every "
-                  f"{CHANGE_WINDOW // 60} minutes). Try fewer, or try again in a few minutes.")
-    else:
-        added, removed, failed = await apply(member, roles, add, remove)
-        held = (held | set(added)) - set(removed)
-        status = status_text(guild, added, removed)
-        if failed:
-            status = (status + "\n" if added or removed else "") + (
-                f"Sorry, I couldn't change {', '.join(f'**{n}**' for n in failed)}. Try again, or ask a moderator.")
-    if kind == "add" and not add and not remove:
-        status = "You already have " + ", ".join(f"**{n}**" for n in chosen if n in held) + "." if chosen else status
-    content, view = region_text(index, roles, status), region_view(index, roles, held)
-    if kind == "add":
-        await interaction.followup.send(content, view=view, ephemeral=True)
-    else:
-        await interaction.edit_original_response(content=content, view=view)
+    try:
+        if not add and not remove:
+            already = [n for n in chosen if n in held]
+            status = ("You already have " + ", ".join(f"**{n}**" for n in already) + "."
+                      if kind == "add" and already else "No change.")
+        elif not limiter.allow(member.id, len(add) + len(remove)):
+            status = (f"That's more changes than I can make right now (up to {CHANGE_LIMIT} countries every "
+                      f"{CHANGE_WINDOW // 60} minutes). Try fewer, or try again in a few minutes.")
+        else:
+            added, removed, failed = await apply(member, roles, add, remove)
+            held = (held | set(added)) - set(removed)
+            status = status_text(guild, added, removed)
+            if failed:
+                status = (status + "\n" if added or removed else "") + (
+                    f"Sorry, I couldn't change {', '.join(f'**{n}**' for n in failed)}. Try again, or ask a moderator.")
+        if unavailable:
+            status += "\n" + ", ".join(f"**{n}**" for n in unavailable) + " isn't available to pick right now. Ask a moderator."
+        content, view = region_text(index, roles, status), region_view(index, roles, held)
+        if kind == "add":
+            await interaction.followup.send(content, view=view, ephemeral=True)
+        else:
+            await interaction.edit_original_response(content=content, view=view)
+    except Exception:
+        # Answered already, so without this the member would see nothing at all
+        try:
+            await interaction.followup.send("Sorry, something went wrong. Try again, or ask a moderator.",
+                                            ephemeral=True)
+        except discord.HTTPException:
+            pass
+        raise
     return True
+
+
+def dropdown_options(interaction, roles):
+    """The values of the dropdown that was used, read from the message it's on, else None."""
+    custom_id = (interaction.data or {}).get("custom_id")
+    message = getattr(interaction, "message", None)
+    for row in getattr(message, "components", None) or []:
+        for item in getattr(row, "children", []):
+            if getattr(item, "custom_id", None) == custom_id and getattr(item, "options", None):
+                return [o.value for o in item.options if o.value in roles]
+    return None
 
 
 async def post(interaction, is_safe, region_index=None):
@@ -266,7 +295,9 @@ async def post(interaction, is_safe, region_index=None):
     pinned; anywhere else without a region, the region buttons. Answers the admin privately."""
     channel = interaction.channel
     if region_index is None:
-        region_index = region_for_channel(getattr(channel, "name", None))
+        # In a thread, the channel it's in names the region
+        named = getattr(channel, "parent", None) if isinstance(channel, discord.Thread) else channel
+        region_index = region_for_channel(getattr(named, "name", None))
     await interaction.response.defer(ephemeral=True)
     if region_index is None:
         content, view = INTRO, region_buttons()
@@ -282,7 +313,8 @@ async def post(interaction, is_safe, region_index=None):
     except discord.HTTPException as e:
         await interaction.followup.send(f"❌ Couldn't post here: {e.text or e}", ephemeral=True)
         return
-    done = "✅ Posted. It keeps working after the bot restarts."
+    done = "✅ Posted. It keeps working after the bot restarts." + (
+        "" if region_index is not None else " No region in this channel's name, so it's the region buttons.")
     if region_index is not None:
         try:
             await message.pin(reason="Country finder")

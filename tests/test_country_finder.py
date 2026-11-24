@@ -54,7 +54,7 @@ class Response:
     """interaction.response, plus the calls made after deferring (edit_original_response, followup)."""
 
     def __init__(self):
-        self.sent, self.edited, self.deferred = [], [], []
+        self.sent, self.edited, self.deferred, self.followups, self.message_edits = [], [], [], [], []
 
     async def send_message(self, content=None, **kwargs):
         self.sent.append((content, kwargs))
@@ -62,13 +62,19 @@ class Response:
     async def defer(self, **kwargs):
         self.deferred.append(kwargs)
 
+    async def edit_message(self, **kwargs):
+        self.message_edits.append(kwargs)
+
+    def answered(self):
+        return self.deferred or self.message_edits or self.sent
+
     async def edit_original_response(self, **kwargs):
-        assert self.deferred, "edit_original_response before the interaction was answered"
+        assert self.answered(), "edit_original_response before the interaction was answered"
         self.edited.append(kwargs)
 
     async def send(self, content=None, **kwargs):  # followup.send
-        assert self.deferred, "followup before the interaction was answered"
-        self.sent.append((content, kwargs))
+        assert self.answered(), "followup before the interaction was answered"
+        self.followups.append((content, kwargs))
 
 
 def make_guild(*extra_roles):
@@ -321,7 +327,8 @@ async def test_country_command_gives_a_named_country():
     i = interaction(guild, member, None)
     await cf.add_country(i, main.is_role_safe_to_grant, " united kingdom ")
     assert member.added == [(["United Kingdom"], cf.AUDIT_REASON)]
-    assert "<#77>" in i.response.sent[0][0] and i.response.sent[0][1]["ephemeral"]
+    (content, kwargs), = i.response.followups
+    assert "<#77>" in content and kwargs["ephemeral"]
 
 
 async def test_country_command_with_an_unknown_or_held_country_changes_nothing():
@@ -438,14 +445,14 @@ async def test_posting_in_other_europe_posts_europes_dropdowns_and_pins_them():
     shared = selects(post.view)
     assert len(shared) == 2 and all(cf.parse(s.custom_id)[0] == "add" for s in shared)
     assert not any(o.default for s in shared for o in s.options) and shared[0].min_values == 1
-    assert "Pinned." in i.response.sent[0][0] and i.response.sent[0][1]["ephemeral"]
+    assert "Pinned." in i.response.followups[0][0] and i.response.followups[0][1]["ephemeral"]
 
 
 async def test_a_post_the_bot_cant_pin_is_still_posted_and_says_what_to_grant():
     channel = Channel("other-africa", pin_fails=True)
     i = await post_in(channel)
     assert len(channel.posts) == 1 and not channel.posts[0].pinned
-    assert "Pin Messages" in i.response.sent[0][0]
+    assert "Pin Messages" in i.response.followups[0][0]
 
 
 async def test_a_region_can_be_named_and_other_channels_get_the_region_buttons():
@@ -467,8 +474,11 @@ async def test_picking_in_the_shared_post_only_adds_and_answers_privately_with_t
     i = interaction(guild, member, add_id("Europe", "Belgium"), ["Belgium"])
     await cf.handle_interaction(i, main.is_role_safe_to_grant)
     assert member.added == [(["Belgium"], cf.AUDIT_REASON)] and member.removed == []  # Austria stays
-    assert i.response.deferred == [{"ephemeral": True, "thinking": True}] and i.response.edited == []
-    (content, kwargs), = i.response.sent
+    # First answer: the shared post redrawn, which clears the member's ticks there
+    shared, = i.response.message_edits
+    assert not any(o.default for s in selects(shared["view"]) for o in s.options)
+    assert i.response.sent == [] and i.response.edited == []
+    (content, kwargs), = i.response.followups
     assert kwargs["ephemeral"] and "You're now in **Belgium**" in content
     own = selects(kwargs["view"])
     assert all(cf.parse(s.custom_id)[0] == "pick" for s in own)
@@ -481,7 +491,7 @@ async def test_picking_a_country_you_have_in_the_shared_post_says_so():
     i = interaction(guild, member, add_id("Europe", "Austria"), ["Austria"])
     await cf.handle_interaction(i, main.is_role_safe_to_grant)
     assert member.added == []
-    assert "You already have **Austria**." in i.response.sent[0][0]
+    assert "You already have **Austria**." in i.response.followups[0][0]
 
 
 async def test_shared_posts_are_within_discords_limits():
@@ -491,3 +501,65 @@ async def test_shared_posts_are_within_discords_limits():
         for row in cf.region_view(index, roles, set(), shared=True).to_components():
             select, = row["components"]
             assert len(select["options"]) <= 25 and len(select["custom_id"]) <= 100
+
+
+async def test_the_shared_post_still_adds_after_the_table_moves_a_page_boundary():
+    guild, roles = make_guild()
+    member = Member()
+    # A post split before a table change names page 0 for a country now on page 1
+    i = interaction(guild, member, f"country_finder:add:{EUROPE}:0", ["United Kingdom"])
+    await cf.handle_interaction(i, main.is_role_safe_to_grant)
+    assert member.added == [(["United Kingdom"], cf.AUDIT_REASON)]
+
+
+async def test_the_shared_post_only_adds_countries_of_its_own_region():
+    guild, roles = make_guild()
+    member = Member()
+    i = interaction(guild, member, f"country_finder:add:{EUROPE}:0", ["Brazil"])
+    await cf.handle_interaction(i, main.is_role_safe_to_grant)
+    assert member.added == [] and "No change." in i.response.followups[0][0]
+
+
+async def test_a_country_whose_role_went_away_says_its_not_available():
+    guild, roles = make_guild()
+    roles["Latvia"]._assignable = False
+    i = interaction(guild, Member(), add_id("Europe", "Latvia"), ["Latvia"])
+    await cf.handle_interaction(i, main.is_role_safe_to_grant)
+    assert "**Latvia** isn't available" in i.response.followups[0][0]
+    # The redrawn post no longer offers it
+    assert "Latvia" not in {o.value for s in selects(i.response.message_edits[0]["view"]) for o in s.options}
+
+
+async def test_a_members_own_copy_means_the_options_it_was_drawn_with():
+    guild, roles = make_guild()
+    member = Member(roles["Austria"], roles["United Kingdom"])
+    custom_id = f"country_finder:pick:{EUROPE}:0"
+    i = interaction(guild, member, custom_id, ["Austria"])
+    # Drawn before a table change: this dropdown listed Austria and the UK
+    options = [NS(value="Austria"), NS(value="United Kingdom")]
+    i.message = NS(components=[NS(children=[NS(custom_id=custom_id, options=options)])])
+    await cf.handle_interaction(i, main.is_role_safe_to_grant)
+    assert member.removed == [(["United Kingdom"], cf.AUDIT_REASON)]
+
+
+async def test_an_error_after_answering_still_tells_the_member():
+    guild, roles = make_guild()
+    member = Member()
+
+    async def broken(*roles, reason=None):
+        raise RuntimeError("boom")
+    member.add_roles = broken
+    i = interaction(guild, member, add_id("Europe", "Germany"), ["Germany"])
+    with pytest.raises(RuntimeError):
+        await cf.handle_interaction(i, main.is_role_safe_to_grant)
+    assert "something went wrong" in i.response.followups[0][0]
+
+
+async def test_posting_in_a_thread_uses_its_channels_region(monkeypatch):
+    class FakeThread(Channel):
+        pass
+    monkeypatch.setattr(discord, "Thread", FakeThread)
+    thread = FakeThread("questions")
+    thread.parent = NS(name="other-americas")
+    await post_in(thread)
+    assert {o.value for s in selects(thread.posts[0].view) for o in s.options} == set(COUNTRIES["Americas"])
