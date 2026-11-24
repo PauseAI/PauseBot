@@ -14,8 +14,9 @@
 # - The database must be paid for anything longer than a rehearsal: a free Render
 #   Postgres is deleted 30 days after it's created (after a 14-day grace period).
 #   `basic-256mb` is the cheapest paid plan, about $6/month. Free is fine for a
-#   rehearsal you tear down the same day, if you change `plan` before creating it.
-# - The 1 GB disk is about $0.25/month.
+#   rehearsal you tear down the same day, if you change `plan` to `free` and remove `diskSizeGB` before creating it.
+# - The web service's 1 GB disk is about $0.25/month; the database's storage is
+#   billed per GB on top of its plan.
 # As a cold standby, none of this exists between rehearsals, so it costs nothing then.
 
 services:
@@ -83,6 +84,11 @@ databases:
   - name: pausebot-db
     region: frankfurt
     plan: basic-256mb
+    # Storage must hold the restored dump with room to spare: the 30-day message log
+    # and the snapshots are most of it. Before a rehearsal, check the size of Railway's
+    # database (SELECT pg_size_pretty(pg_database_size(current_database()));) and raise
+    # this if it's over half. Storage is billed per GB; it can grow later, not shrink.
+    diskSizeGB: 5
     postgresMajorVersion: "18"
     databaseName: pausebot
     # No connections from outside Render. To restore a dump, add your own IP in the
