@@ -535,3 +535,16 @@ def test_default_channels_everyone_cant_see_are_left_out(tmp_path):
     payload = json.loads((tmp_path / "onboarding.json").read_text())
     assert welcome["id"] not in payload["default_channel_ids"] and "9999" not in payload["default_channel_ids"]
     assert "Leave out default channels @everyone can't see" in output and "#welcome" in output
+
+
+def test_members_only_lists_just_countries_someone_holds(tmp_path):
+    fake = FakeDiscord()
+    apply(fake, tmp_path)
+    code, output = run(fake, "--onboarding", *MERGE, "--members-only", tmp_path=tmp_path)
+    assert code == 0, output
+    payload = json.loads((tmp_path / "onboarding.json").read_text())
+    group = next(p for p in payload["prompts"] if p["title"] == "Where are you? Americas & Africa")
+    titles = [o["title"] for o in group["options"]]
+    assert "Ethiopia" not in titles and "Kenya" in titles and "Tunisia" in titles  # Tunisia: a National Leader
+    assert titles[-1] == "Somewhere else in Africa"
+    assert "countries with no members yet use 'Somewhere else'" in output and "answers in all" in output

@@ -641,7 +641,7 @@ def is_country_prompt(prompt, country_role_ids):
     return any(r in country_role_ids for o in prompt["options"] for r in o.get("role_ids", []))
 
 
-def build_onboarding(state, onboarding, ids=None, merge=None, renames=None):
+def build_onboarding(state, onboarding, ids=None, merge=None, renames=None, members_only=False):
     """The new onboarding config: every question kept as it was except the country ones, which are
     replaced by grouped regional questions (ONBOARDING_GROUPS). merge: (source title, target title) moves
     one question's options into another. Returns (payload, summary lines). Raises Abort."""
@@ -684,12 +684,15 @@ def build_onboarding(state, onboarding, ids=None, merge=None, renames=None):
         existing = existing_regional.get(title, {})
         in_group = [c for c in countries if region_of(c) in regions]
         room = MAX_OPTIONS_PER_PROMPT - len(regions)  # one "Somewhere else" per region
-        if len(in_group) > room:
-            def priority(country):
-                role = countries[country]
-                held = state.role_counts.get(role["id"], 0) > 0 or role["id"] in state.leader_held
-                return (not held, rank.get(country, len(rank)), country)
-            chosen = set(sorted(in_group, key=priority)[:room])
+
+        def held(country):
+            role = countries[country]
+            return state.role_counts.get(role["id"], 0) > 0 or role["id"] in state.leader_held
+        if members_only:
+            in_group_held = [c for c in in_group if held(c)]
+            chosen = set(sorted(in_group_held, key=lambda c: (rank.get(c, len(rank)), c))[:room])
+        elif len(in_group) > room:
+            chosen = set(sorted(in_group, key=lambda c: (not held(c), rank.get(c, len(rank)), c))[:room])
         else:
             chosen = set(in_group)
         left_out = sorted(set(in_group) - chosen)
@@ -734,7 +737,8 @@ def build_onboarding(state, onboarding, ids=None, merge=None, renames=None):
         })
         summary.append(f"  Question '{title}': {len(options)} options"
                        + (f" (role only, pointing to other-<region>: {', '.join(no_channel)})" if no_channel else "")
-                       + (f"; not listed, so 'Somewhere else': {', '.join(left_out)}" if left_out else ""))
+                       + ((f"; {len(left_out)} countries with no members yet use 'Somewhere else'" if members_only
+                           else f"; not listed, so 'Somewhere else': {', '.join(left_out)}") if left_out else ""))
 
     first = next((i for i, p in enumerate(prompts) if p in country_prompts), len(prompts))
     kept_before = [to_put_prompt(p) for p in prompts[:first] if p not in country_prompts]
@@ -908,6 +912,8 @@ def main(argv=None, http=None, out=print, env=os.environ):
     parser.add_argument("--apply-onboarding", action="store_true", help="with --onboarding: send it to Discord")
     parser.add_argument("--merge-question", metavar="TITLE", help="with --onboarding: move this question's options "
                         "into the one named by --into, so onboarding stays within Discord's 4 questions")
+    parser.add_argument("--members-only", action="store_true", help="with --onboarding: list only countries "
+                        "someone holds the role of (Discord limits answers across all questions)")
     parser.add_argument("--into", metavar="TITLE", help="the question --merge-question's options go into")
     parser.add_argument("--rename-option", metavar="OLD=NEW", action="append", default=[],
                         help="rename a merged option, e.g. 'Yes=I want to volunteer'")
@@ -981,7 +987,10 @@ def run_onboarding(http, state, args, out):
     onboarding = http.request("GET", f"/guilds/{args.guild}/onboarding")
     merge = (args.merge_question, args.into) if args.merge_question else None
     renames = dict(r.split("=", 1) for r in args.rename_option)
-    payload, lines = build_onboarding(state, onboarding, merge=merge, renames=renames)
+    payload, lines = build_onboarding(state, onboarding, merge=merge, renames=renames,
+                                      members_only=args.members_only)
+    total = sum(len(p["options"]) for p in payload["prompts"])
+    lines.append(f"  {total} answers in all (Discord accepted 105 and refused 162 on 24 Nov 2026)")
     Path(args.onboarding_file).write_text(json.dumps(payload, indent=2, ensure_ascii=False))
     out(f"Wrote the new onboarding config to {args.onboarding_file}. Changes from the current one:")
     out("\n".join(lines))
