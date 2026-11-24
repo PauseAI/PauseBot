@@ -77,9 +77,6 @@ REQUEST_NOTICE_START = "Country requests are no longer needed."
 WELCOME_MARK = "this is your channel now"
 PROMPT_TITLE_PREFIX = "Where are you? "
 SOMEWHERE_ELSE = "Somewhere else in {region}"
-# Codes with no standard Unicode flag (XK, Kosovo, is user-assigned), which Discord may refuse as an
-# option emoji: these get their region's emoji instead.
-NONSTANDARD_FLAGS = {"XK"}
 
 # What the 21 Nov 2026 count expected to be created, to show differences in the dry run.
 EXPECTED_NEW_CHANNELS = {
@@ -753,8 +750,6 @@ def build_onboarding(state, onboarding, ids=None, merge=None, renames=None, memb
                 emoji = to_put_option(old) if old else {}
                 if "emoji_name" in emoji or "emoji_id" in emoji:
                     option.update({k: v for k, v in emoji.items() if k.startswith("emoji_")})
-                elif country_iso(country) in NONSTANDARD_FLAGS:
-                    option.update(emoji_name=REGION_EMOJI[region], emoji_animated=False)
                 elif country_iso(country):
                     option.update(emoji_name=flag(country_iso(country)), emoji_animated=False)
                 options.append(option)
