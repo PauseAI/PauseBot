@@ -1,0 +1,90 @@
+# Cold standby for PauseBot on Render (Frankfurt), infrastructure plan 2.1.
+#
+# Nothing on Render is created from this file until someone runs it as a Blueprint
+# (Dashboard > New > Blueprint). The runbook is docs/standby-render.md: read it first,
+# because creating this starts a bot, and two bots must never run on the same token.
+#
+# Production runs on Railway; the README's "Railway services" section is what this matches.
+#
+# Plans and cost (check https://render.com/pricing, prices change):
+# - The web service must be paid. A free web service spins down after 15 minutes
+#   without inbound HTTP traffic, and the bot's own outgoing Discord connection doesn't
+#   count, so a free bot would go offline within the hour. Free also can't have a disk
+#   (see below). `starter` (0.5 CPU, 512 MB) is the cheapest paid plan, about $7/month.
+# - The database must be paid for anything longer than a rehearsal: a free Render
+#   Postgres is deleted 30 days after it's created (after a 14-day grace period).
+#   `basic-256mb` is the cheapest paid plan, about $6/month. Free is fine for a
+#   rehearsal you tear down the same day, if you change `plan` before creating it.
+# - The 1 GB disk is about $0.25/month.
+# As a cold standby, none of this exists between rehearsals, so it costs nothing then.
+
+services:
+  - type: web
+    name: pausebot
+    runtime: python
+    region: frankfurt
+    plan: starter
+    # One instance only: two would both answer Discord events and run the daily jobs.
+    numInstances: 1
+    # The Blueprint's own repo (PauseAI/PauseBot) and branch (main), like Railway.
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    # GET / answers {status, bot_user} once the web server is up. The web server only
+    # starts after the bot has logged in to Discord, so with no DISCORD_TOKEN the
+    # process exits and the deploy shows as failed. That's expected in a rehearsal.
+    healthCheckPath: /
+    # A disk the bot never uses. A service with a disk is stopped before its new
+    # instance starts on each deploy. Without one, Render runs the old and new
+    # instances side by side for about a minute, which would put two bots on the same
+    # token. A few seconds of downtime per deploy is the cost.
+    disk:
+      name: pausebot-no-overlap
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      # Railway's Python (3.13); Render's default is 3.14. Must be a full version.
+      # If Render hasn't got this patch release, use the newest 3.13 it lists.
+      - key: PYTHON_VERSION
+        value: "3.13.18"
+      - key: PORT
+        value: "8080"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pausebot-db
+          property: connectionString
+      # Secrets: Render asks for these when the Blueprint is first created, and never
+      # syncs them afterwards. Values come from Psono at failover; never commit them.
+      # See the runbook for which to leave empty in a rehearsal.
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: MAILERSEND_API_KEY
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: STATS_SECRET
+        sync: false
+      - key: CIVICRM_URL
+        sync: false
+      - key: CIVICRM_API_KEY
+        sync: false
+      - key: CF_ACCESS_CLIENT_ID
+        sync: false
+      - key: CF_ACCESS_CLIENT_SECRET
+        sync: false
+      - key: MESSAGE_LOG_CHANNEL_ID
+        sync: false
+      - key: MESSAGE_LOG_IGNORE_IDS
+        sync: false
+      # Set to true for a rehearsal with a dev bot's token; leave empty in production.
+      - key: DEVELOPER_MODE
+        sync: false
+
+databases:
+  - name: pausebot-db
+    region: frankfurt
+    plan: basic-256mb
+    postgresMajorVersion: "18"
+    databaseName: pausebot
+    # No connections from outside Render. To restore a dump, add your own IP in the
+    # Dashboard (database > Networking) for the restore, then remove it.
+    ipAllowList: []

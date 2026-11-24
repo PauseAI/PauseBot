@@ -137,6 +137,8 @@ The bot and Postgres are in US West (California). A move to EU West is planned (
 - **Region**: EU West (Amsterdam).
 - **Variables**: `BACKUP_NAME`, `DATABASE_URL`, `BACKUP_AGE_RECIPIENTS`, `BACKUP_B2_REGION`, `BACKUP_B2_BUCKET`, `BACKUP_B2_KEY_ID`, `BACKUP_B2_SECRET`, `BACKUP_HEALTHCHECK_URL`. They're documented with the image.
 
+A cold standby on Render (Frankfurt) is described in `render.yaml`, with its rehearsal and failover runbook in [docs/standby-render.md](docs/standby-render.md). Nothing on Render exists between rehearsals.
+
 To capture the dashboard settings as a file later, run `railway config pull` with the Railway CLI. It writes the project's current settings to `.railway/railway.ts`, Railway's [Infrastructure as Code](https://docs.railway.com/infrastructure-as-code) format.
 
 ### Moving the member records off Airtable
@@ -240,4 +242,4 @@ If you get `CERTIFICATE_VERIFY_FAILED` on a Mac, your Python from python.org has
 
 Backups aren't run from this repo. PauseBot's Railway "backup" service runs PauseAI/infra's backup-image: each night it dumps this database, encrypts the dump with age and uploads it to Backblaze B2, where Object Lock keeps it for 30 days. How it's set up, its variables, and how to download, decrypt and restore a dump are in the [backup-image README](https://github.com/PauseAI/infra/blob/main/backup-image/README.md) (see [Restoring](https://github.com/PauseAI/infra/blob/main/backup-image/README.md#restoring)).
 
-Dumps contain the 30-day message log, so a dump holds members' messages. Restore on a trusted machine, not in a checkout an AI agent can read, and delete the downloaded file and the age identity file afterwards.
+Dumps contain the 30-day message log, so a dump holds members' messages. Restore on a trusted machine, not in a checkout an AI agent can read, and delete the downloaded file and the age identity file afterwards. To restore a dump into a standby on Render, follow [docs/standby-render.md](docs/standby-render.md).
