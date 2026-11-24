@@ -130,6 +130,99 @@ To capture the dashboard settings as a file later, run `railway config pull` wit
 
 `jobs/copy_airtable_members.py` copies Airtable's Discord table into the `discord_members` table, once. Stop the bot, run it with `DATABASE_URL` and `AIRTABLE_PERSONAL_ACCESS_TOKEN` set, then start the bot. Running it again overwrites each copied row with Airtable's.
 
+### Country channels into regions (one-off, November 2026)
+
+`jobs/country_regions.py` replaces the 🌍 COUNTRIES and 🌎 COUNTRIES+ categories with five regional ones (🌍 EUROPE, 🌎 AMERICAS, 🌍 AFRICA, 🌍 MIDDLE EAST, 🌏 ASIA-PACIFIC), once. Which region each country is in is the table in `jobs/country_regions_table.py`. What it does, in order:
+
+1. Renames the role `Dominian Republic` to `Dominican Republic`.
+2. Creates the regional categories with the old 🌍 COUNTRIES category's permission overwrites, except the `Paused (Wick)` deny. They go where the old categories are.
+3. Moves every country channel and #european-union into its region, keeping their history and IDs, and syncs their permissions to the category. #france and #germany keep their own permissions. Creates a channel for every country role that has at least one member (or is held by a National Leader) and has no channel yet, plus `other-<region>` in each region. Sorts each region alphabetically, with `other-<region>` last.
+4. Moves #request-a-country-🌍 to the end of 📚 SERVER GUIDE RESOURCES, posts a notice there that requests are no longer needed, then stops @everyone sending messages in it. It's not deleted.
+5. Posts a welcome in each new country channel, pinging only that country's role.
+6. Deletes the two old categories, only once they're empty. It deletes nothing else.
+
+Onboarding is a separate step. Discord allows at most 4 questions; a dropdown question can have 50 answers and a multiple-choice one only 12. So it replaces the country questions with three optional multi-select dropdowns: "Where are you? Europe", "Where are you? Middle East & Asia-Pacific" and "Where are you? Americas & Africa" (`ONBOARDING_GROUPS` in the table). Each country option gives its role and its channel, with the country's own name as the description where the old option had none. Each region ends with "Somewhere else in <region>", which gives only `other-<region>`. A group with more countries than fit lists those with members first, then the most populous; the rest use "Somewhere else". To stay within 4 questions, merge one of the other questions into another with `--merge-question "<title>" --into "<title>"` (options that give nothing are dropped; rename one with `--rename-option "Yes=I want to volunteer"`). On the live server use `--members-only`: Discord caps multiple-choice questions at 12 answers, so the interests and volunteering questions can't be merged, and only two country questions fit ("Europe & Middle East", "Americas, Africa & Asia-Pacific"), listing only countries someone holds the role of. The rest use "Somewhere else". Before sending anything it stops if onboarding would have more than 4 questions, a dropdown more than 50 answers, or a multiple-choice question more than 12 (for example after `--merge-question` into one). `--merge-question` also stops if the question to merge isn't there: check the title, or leave it out if an earlier run already merged it. Every other question and the onboarding settings are carried over unchanged, since Discord replaces the whole onboarding config at once; so are the default channels, except any @everyone can't see, which are left out and listed.
+
+Everything is read from the live server on each run, so after a partial failure, run it again: steps already done are skipped. The script needs only Python 3 (no packages) and reads the token from `DISCORD_TOKEN`, which it never prints.
+
+**Before the run**
+
+1. Read the last request in #request-a-country-🌍 (20 November). Once the run has made the person's country channel, point them to it.
+2. In Server Settings > Roles, give the bot's role (PauseBot) **Manage Channels**, **Manage Server** and **Mention @everyone, @here and All Roles**. It already has **Manage Roles**. Mention @everyone is only so the welcome pings roles that aren't mentionable (on 22 November, only @Iran); without it, everything else still works.
+3. From the repo root, set the token without it going into your shell history:
+
+   ```bash
+   read -rs DISCORD_TOKEN && export DISCORD_TOKEN
+   ```
+
+**Run**
+
+1. Dry run. It reads the server, changes nothing and prints every change it would make, then a summary with any warnings. Check the new channels against the expected list (it says what differs):
+
+   ```bash
+   python3 jobs/country_regions.py
+   ```
+
+2. Make the changes. Before changing anything it saves the current roles, channels, permissions and onboarding config to `country_regions_backup.json`. Keep that file: it's the rollback, and a rerun reads it to tell which channels are new. A rerun never overwrites it; it saves its own copy beside it, with the time in the name.
+
+   ```bash
+   python3 jobs/country_regions.py --apply
+   ```
+
+   To give every country in the table its own channel now, not only those with members, rerun with `--all-countries` (dry run first, then add `--apply`). Countries nobody has picked yet get a channel but no welcome. Europe then has exactly 50 channels, Discord's limit for a category; the script stops rather than go over.
+
+   ```bash
+   python3 jobs/country_regions.py --all-countries
+   python3 jobs/country_regions.py --all-countries --apply
+   ```
+
+3. Build the new onboarding config. This writes it to `onboarding_new.json` and lists what changes, without sending anything:
+
+   ```bash
+   python3 jobs/country_regions.py --onboarding --members-only
+   ```
+
+   If a country question also has an option giving a role that isn't a country in the table, it stops and names the option, so nothing is lost: move that option to another question by hand, or add the country to the table. Options that give no role (such as a "not listed? ask here" one) are dropped, and listed.
+
+4. Read `onboarding_new.json`, then send exactly that file to Discord. With `--from-file` it sends the file as it is, after the same limit checks, instead of building it again from the live server (which may have changed since you read it), and leaves the file alone. It saves the current config to `country_regions_backup-onboarding-<time>.json` first:
+
+   ```bash
+   python3 jobs/country_regions.py --onboarding --apply-onboarding --from-file onboarding_new.json
+   ```
+
+   Without `--from-file` it builds the config again and sends that; then give it the same options as step 3:
+
+   ```bash
+   python3 jobs/country_regions.py --onboarding --apply-onboarding --members-only
+   ```
+
+   The limits above aren't in Discord's API docs; they're what Discord refused on 24 November 2026. If Discord rejects the change anyway, it rejects all of it and onboarding stays as it was.
+
+**After the run**
+
+1. Check the categories in Discord and the onboarding in Server Settings > Onboarding.
+2. Take **Manage Channels**, **Manage Server** and **Mention @everyone** back off the bot's role. It keeps **Manage Roles**, which it had before.
+3. Unset the token: `unset DISCORD_TOKEN`.
+4. About two weeks after the run, delete #request-a-country-🌍 by hand.
+
+**Rollback** (each is a dry run without `--apply`, and needs the same permissions as the run)
+
+- Put the onboarding back as it was. Default channels @everyone can no longer see are left out (and listed), and it stops before sending if the saved config breaks the limits above:
+
+  ```bash
+  python3 jobs/country_regions.py --restore-onboarding country_regions_backup.json --apply
+  ```
+
+- Put the old categories back and move each channel back into them with its old permissions (including unlocking #request-a-country-🌍):
+
+  ```bash
+  python3 jobs/country_regions.py --restore-layout country_regions_backup.json --apply
+  ```
+
+  This leaves the new channels and the regional categories in place, since the script never deletes channels. Delete them by hand if you want them gone. The role keeps its corrected name, and the categories' order may need dragging back.
+
+If you get `CERTIFICATE_VERIFY_FAILED` on a Mac, your Python from python.org hasn't got its certificates yet: run `Install Certificates.command` from its folder in Applications.
+
 ### Database backups
 
 Backups aren't run from this repo. PauseBot's Railway "backup" service runs PauseAI/infra's backup-image: each night it dumps this database, encrypts the dump with age and uploads it to Backblaze B2, where Object Lock keeps it for 30 days. How it's set up, its variables, and how to download, decrypt and restore a dump are in the [backup-image README](https://github.com/PauseAI/infra/blob/main/backup-image/README.md) (see [Restoring](https://github.com/PauseAI/infra/blob/main/backup-image/README.md#restoring)).

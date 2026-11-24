@@ -5,3 +5,6 @@ __pycache__/
 *.pyc
 # Database dumps, if you download one to restore: they contain members' messages
 /backups/
+# The country regions script's rollback backup and onboarding draft (jobs/country_regions.py)
+country_regions_backup*.json
+onboarding_new.json
