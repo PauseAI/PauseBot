@@ -792,7 +792,9 @@ async def country_cmd_autocomplete(interaction: discord.Interaction, current: st
 @bot.tree.command(name='country_finder_post', description="Posts the country finder in this channel.")
 @app_commands.guild_only()
 @app_commands.default_permissions(manage_guild=True)
-async def country_finder_post(interaction: discord.Interaction):
+@app_commands.describe(region="The region whose countries to post. Left empty, it's this other-<region> channel's.")
+@app_commands.choices(region=[app_commands.Choice(name=r, value=i) for i, r in enumerate(country_finder.REGIONS)])
+async def country_finder_post(interaction: discord.Interaction, region: app_commands.Choice[int] | None = None):
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return
     if not is_active_guild(interaction.guild.id):
@@ -802,13 +804,7 @@ async def country_finder_post(interaction: discord.Interaction):
     if not (perms.administrator or perms.manage_guild):
         await interaction.response.send_message("❌ You need Manage Server to post the country finder.", ephemeral=True)
         return
-    await interaction.response.defer(ephemeral=True)
-    try:
-        await interaction.channel.send(country_finder.INTRO, view=country_finder.region_buttons())
-    except discord.HTTPException as e:
-        await interaction.followup.send(f"❌ Couldn't post here: {e.text or e}", ephemeral=True)
-        return
-    await interaction.followup.send("✅ Posted. Its buttons keep working after the bot restarts.", ephemeral=True)
+    await country_finder.post(interaction, is_role_safe_to_grant, region.value if region else None)
 
 @bot.event
 async def on_interaction(interaction: discord.Interaction):

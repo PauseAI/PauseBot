@@ -3,13 +3,15 @@
 Discord onboarding fits only the countries that already have members, so everyone else picks
 "Somewhere else in <region>". The finder lists every country in jobs/country_regions_table.py:
 
-- A message the bot posts once (/country_finder_post, run in the channel it should go in) with one
-  button per region. /country opens the same buttons for one member, privately.
-- A region button answers privately with that region's countries in one or two dropdowns (Discord
-  allows 25 options per dropdown), the member's own countries already ticked.
-- Ticking a country gives its role, unticking takes it away. Members can hold more than one country,
-  as with onboarding. Only roles named in the table are ever given or taken, and only those that
-  pass is_role_safe_to_grant and sit below the bot's own role.
+- In each other-<region> channel, where onboarding's "Somewhere else in <region>" sends people, a
+  pinned message (/country_finder_post) with that region's countries in one or two dropdowns (Discord
+  allows 25 options per dropdown). The message is shared, so picking there only adds: the reply,
+  which only the member sees, is their own copy with their countries ticked.
+- /country: privately, a button per region, each opening that member's own copy of the region's
+  dropdowns. /country name:<country> gives one straight away.
+- In a member's own copy, ticking a country gives its role and unticking takes it away. Members can
+  hold more than one country, as with onboarding. Only roles named in the table are ever given or
+  taken, and only those that pass is_role_safe_to_grant and sit below the bot's own role.
 
 Every component is matched by its custom_id in on_interaction rather than by a stored View, so the
 posted message and any open dropdowns keep working after the bot restarts.
@@ -31,6 +33,9 @@ CHANGE_LIMIT = 10
 CHANGE_WINDOW = 600
 
 AUDIT_REASON = "Country finder: the member chose their countries"
+
+POST_TEXT = ("**Not listed in onboarding?** Pick your country here to get its role and its channel. "
+             "You can pick more than one. To change or remove yours later, use `/country`.")
 
 INTRO = ("**Where are you?** Pick your country to get its role and its channel. Press your region, then "
          "tick your country. You can pick more than one, and change them any time.")
@@ -96,10 +101,12 @@ def region_buttons():
     return unstored(view)
 
 
-def region_view(region_index, roles, held):
+def region_view(region_index, roles, held, shared=False):
     """The dropdowns for one region, with the member's countries ticked. Countries without a role the
-    bot can give are left out."""
+    bot can give are left out. shared: for the posted message everyone sees, so nothing is ticked and
+    picking only adds."""
     region = REGIONS[region_index]
+    kind = "add" if shared else "pick"
     view = discord.ui.View(timeout=None)
     for page, names in enumerate(region_pages(region)):
         options = []
@@ -109,12 +116,13 @@ def region_view(region_index, roles, held):
             iso = iso_of(name)
             options.append(discord.SelectOption(
                 label=name, value=name, description=ENDONYMS.get(name),
-                emoji=flag(iso) if iso else None, default=name in held))
+                emoji=flag(iso) if iso else None, default=not shared and name in held))
         if not options:
             continue
         view.add_item(discord.ui.Select(
-            custom_id=f"{PREFIX}:pick:{region_index}:{page}", placeholder=f"{page_label(region, page)}: tick your country",
-            min_values=0, max_values=len(options), options=options))
+            custom_id=f"{PREFIX}:{kind}:{region_index}:{page}",
+            placeholder=f"{page_label(region, page)}: {'pick' if shared else 'tick'} your country",
+            min_values=1 if shared else 0, max_values=len(options), options=options))
     return unstored(view)
 
 
@@ -135,6 +143,11 @@ def region_text(region_index, roles, status=""):
     if not any(name in roles for name in COUNTRIES[region]):
         text = f"**{region}**: there are no country roles for this region yet. Ask in the server for one."
     return f"{status}\n\n{text}" if status else text
+
+
+def region_for_channel(name):
+    """The region index whose other-<region> channel this is, else None."""
+    return next((i for i, region in enumerate(REGIONS) if name == f"other-{slug(region)}"), None)
 
 
 def channel_mention(guild, country):
@@ -185,10 +198,10 @@ def parse(custom_id):
         if parts[1] == "region" and len(parts) == 3:
             index = int(parts[2])
             return ("region", index) if 0 <= index < len(REGIONS) else None
-        if parts[1] == "pick" and len(parts) == 4:
+        if parts[1] in ("pick", "add") and len(parts) == 4:
             index, page = int(parts[2]), int(parts[3])
             if 0 <= index < len(REGIONS) and 0 <= page < len(region_pages(REGIONS[index])):
-                return ("pick", index, page)
+                return (parts[1], index, page)
     except (IndexError, ValueError):
         pass
     return None
@@ -213,11 +226,19 @@ async def handle_interaction(interaction, is_safe):
             region_text(parsed[1], roles), view=region_view(parsed[1], roles, held), ephemeral=True)
         return True
 
-    _, index, page = parsed
+    kind, index, page = parsed
     chosen = [v for v in (interaction.data or {}).get("values", []) if v in roles]
-    add, remove = changes(held, [n for n in region_pages(REGIONS[index])[page] if n in roles], chosen)
-    # Each role is its own API call, which can outlast Discord's 3 seconds for a first answer
-    await interaction.response.defer()
+    page_names = [n for n in region_pages(REGIONS[index])[page] if n in roles]
+    add, remove = changes(held, page_names, chosen)
+    if kind == "add":
+        # The shared post: an unticked country there says nothing about the member, so nothing is removed
+        remove = []
+    # Each role is its own API call, which can outlast Discord's 3 seconds for a first answer. The
+    # shared post is answered with a new private message; a member's own copy is edited in place.
+    if kind == "add":
+        await interaction.response.defer(ephemeral=True, thinking=True)
+    else:
+        await interaction.response.defer()
     if not add and not remove:
         status = "No change."
     elif not limiter.allow(member.id, len(add) + len(remove)):
@@ -230,9 +251,46 @@ async def handle_interaction(interaction, is_safe):
         if failed:
             status = (status + "\n" if added or removed else "") + (
                 f"Sorry, I couldn't change {', '.join(f'**{n}**' for n in failed)}. Try again, or ask a moderator.")
-    await interaction.edit_original_response(
-        content=region_text(index, roles, status), view=region_view(index, roles, held))
+    if kind == "add" and not add and not remove:
+        status = "You already have " + ", ".join(f"**{n}**" for n in chosen if n in held) + "." if chosen else status
+    content, view = region_text(index, roles, status), region_view(index, roles, held)
+    if kind == "add":
+        await interaction.followup.send(content, view=view, ephemeral=True)
+    else:
+        await interaction.edit_original_response(content=content, view=view)
     return True
+
+
+async def post(interaction, is_safe, region_index=None):
+    """/country_finder_post: in other-<region> (or for the region given), that region's dropdowns,
+    pinned; anywhere else without a region, the region buttons. Answers the admin privately."""
+    channel = interaction.channel
+    if region_index is None:
+        region_index = region_for_channel(getattr(channel, "name", None))
+    await interaction.response.defer(ephemeral=True)
+    if region_index is None:
+        content, view = INTRO, region_buttons()
+    else:
+        roles = country_roles(interaction.guild, is_safe)
+        view = region_view(region_index, roles, set(), shared=True)
+        if not view.children:
+            await interaction.followup.send(f"❌ No country roles I can give in {REGIONS[region_index]}.", ephemeral=True)
+            return
+        content = f"**{REGION_EMOJI.get(REGIONS[region_index], '')} {REGIONS[region_index]}**\n{POST_TEXT}"
+    try:
+        message = await channel.send(content, view=view)
+    except discord.HTTPException as e:
+        await interaction.followup.send(f"❌ Couldn't post here: {e.text or e}", ephemeral=True)
+        return
+    done = "✅ Posted. It keeps working after the bot restarts."
+    if region_index is not None:
+        try:
+            await message.pin(reason="Country finder")
+            done += " Pinned."
+        except discord.HTTPException as e:
+            done += (f" I couldn't pin it ({e.text or e}): give the PauseBot role Pin Messages here, or pin it"
+                     " yourself.")
+    await interaction.followup.send(done, ephemeral=True)
 
 
 async def apply(member, roles, add, remove):

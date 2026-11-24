@@ -392,3 +392,102 @@ async def test_a_dropped_country_is_saved_so_a_join_time_restore_cant_give_it_ba
     # Say the bot restarts minutes after they joined: the startup sync restores saved roles
     await main.sync_member_record(after, restore_roles=True)
     assert after.added == []
+
+
+# ── The pinned post in other-<region> ─────────────────────────────────────────
+
+class Posted:
+    def __init__(self, content, view, pin_fails):
+        self.content, self.view, self.pinned, self.pin_fails = content, view, False, pin_fails
+
+    async def pin(self, reason=None):
+        if self.pin_fails:
+            raise discord.Forbidden(NS(status=403, reason="Forbidden"), "Missing Permissions")
+        self.pinned = True
+
+
+class Channel:
+    def __init__(self, name, pin_fails=False):
+        self.name, self.posts, self.pin_fails = name, [], pin_fails
+
+    async def send(self, content, view=None):
+        self.posts.append(Posted(content, view, self.pin_fails))
+        return self.posts[-1]
+
+
+def test_other_region_channels_map_to_their_region():
+    assert cf.region_for_channel("other-europe") == REGIONS.index("Europe")
+    assert cf.region_for_channel("other-middle-east") == REGIONS.index("Middle East")
+    assert cf.region_for_channel("other-asia-pacific") == REGIONS.index("Asia-Pacific")
+    assert cf.region_for_channel("welcome") is None and cf.region_for_channel(None) is None
+
+
+async def post_in(channel, region=None):
+    guild, _ = make_guild()
+    i = interaction(guild, Member(), None)
+    i.channel = channel
+    await cf.post(i, main.is_role_safe_to_grant, region)
+    return i
+
+
+async def test_posting_in_other_europe_posts_europes_dropdowns_and_pins_them():
+    channel = Channel("other-europe")
+    i = await post_in(channel)
+    post, = channel.posts
+    assert "Not listed in onboarding?" in post.content and post.pinned
+    shared = selects(post.view)
+    assert len(shared) == 2 and all(cf.parse(s.custom_id)[0] == "add" for s in shared)
+    assert not any(o.default for s in shared for o in s.options) and shared[0].min_values == 1
+    assert "Pinned." in i.response.sent[0][0] and i.response.sent[0][1]["ephemeral"]
+
+
+async def test_a_post_the_bot_cant_pin_is_still_posted_and_says_what_to_grant():
+    channel = Channel("other-africa", pin_fails=True)
+    i = await post_in(channel)
+    assert len(channel.posts) == 1 and not channel.posts[0].pinned
+    assert "Pin Messages" in i.response.sent[0][0]
+
+
+async def test_a_region_can_be_named_and_other_channels_get_the_region_buttons():
+    channel = Channel("somewhere")
+    await post_in(channel, REGIONS.index("Americas"))
+    await post_in(channel)
+    americas, buttons = channel.posts
+    assert {o.value for s in selects(americas.view) for o in s.options} == set(COUNTRIES["Americas"])
+    assert [b.label for b in buttons.view.children] == REGIONS and not buttons.pinned
+
+
+def add_id(region, country):
+    return pick_id(region, country).replace(":pick:", ":add:")
+
+
+async def test_picking_in_the_shared_post_only_adds_and_answers_privately_with_their_own_copy():
+    guild, roles = make_guild()
+    member = Member(roles["Austria"])
+    i = interaction(guild, member, add_id("Europe", "Belgium"), ["Belgium"])
+    await cf.handle_interaction(i, main.is_role_safe_to_grant)
+    assert member.added == [(["Belgium"], cf.AUDIT_REASON)] and member.removed == []  # Austria stays
+    assert i.response.deferred == [{"ephemeral": True, "thinking": True}] and i.response.edited == []
+    (content, kwargs), = i.response.sent
+    assert kwargs["ephemeral"] and "You're now in **Belgium**" in content
+    own = selects(kwargs["view"])
+    assert all(cf.parse(s.custom_id)[0] == "pick" for s in own)
+    assert {o.value for s in own for o in s.options if o.default} == {"Austria", "Belgium"}
+
+
+async def test_picking_a_country_you_have_in_the_shared_post_says_so():
+    guild, roles = make_guild()
+    member = Member(roles["Austria"])
+    i = interaction(guild, member, add_id("Europe", "Austria"), ["Austria"])
+    await cf.handle_interaction(i, main.is_role_safe_to_grant)
+    assert member.added == []
+    assert "You already have **Austria**." in i.response.sent[0][0]
+
+
+async def test_shared_posts_are_within_discords_limits():
+    guild, _ = make_guild()
+    roles = cf.country_roles(guild, main.is_role_safe_to_grant)
+    for index in range(len(REGIONS)):
+        for row in cf.region_view(index, roles, set(), shared=True).to_components():
+            select, = row["components"]
+            assert len(select["options"]) <= 25 and len(select["custom_id"]) <= 100
