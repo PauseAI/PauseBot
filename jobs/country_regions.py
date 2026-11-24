@@ -30,7 +30,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # So running this file directly can import jobs.*
 
 from jobs.country_regions_table import (  # noqa: E402
-    COUNTRIES, EXTRA_CHANNELS, KEEP_OWN_OVERWRITES, REGIONS, region_of,
+    COUNTRIES, ENDONYMS, EXTRA_CHANNELS, KEEP_OWN_OVERWRITES, ONBOARDING_GROUPS, POPULATION_ORDER, REGIONS,
+    region_of,
 )
 
 API = "https://discord.com/api/v10"
@@ -51,7 +52,7 @@ MAX_PER_GUILD = 500
 # Discord's API docs (checked 22 Nov 2026) give no limit on onboarding questions or options per
 # question; these are the limits Discord's own onboarding editor applies, as far as we know. If
 # Discord's real limit is lower it rejects the whole PUT and onboarding stays as it was.
-MAX_PROMPTS = 15
+MAX_PROMPTS = 4  # Discord rejects more (TOO_MANY_ONBOARDING_PROMPTS, 24 Nov 2026)
 MAX_OPTIONS_PER_PROMPT = 50
 
 OLD_CATEGORY_KEYS = ["COUNTRIES", "COUNTRIES+"]
@@ -616,14 +617,36 @@ def onboarding_payload(onboarding, prompts):
     return payload
 
 
+VIEW_CHANNEL = 1 << 10
+
+
+def everyone_can_view(state, channel_id):
+    """Whether @everyone can see the channel: the server-wide @everyone permission, then the channel's
+    own @everyone overwrite. A channel the bot can't see counts as hidden."""
+    channel = state.channels.get(channel_id)
+    if channel is None:
+        return False
+    everyone = state.roles.get(state.guild_id, {})
+    allowed = bool(int(everyone.get("permissions", "0")) & VIEW_CHANNEL)
+    for o in channel.get("permission_overwrites", []):
+        if o["id"] == state.guild_id:
+            if int(o["deny"]) & VIEW_CHANNEL:
+                allowed = False
+            if int(o["allow"]) & VIEW_CHANNEL:
+                allowed = True
+    return allowed
+
+
 def is_country_prompt(prompt, country_role_ids):
     return any(r in country_role_ids for o in prompt["options"] for r in o.get("role_ids", []))
 
 
-def build_onboarding(state, onboarding, ids=None):
+def build_onboarding(state, onboarding, ids=None, merge=None, renames=None):
     """The new onboarding config: every question kept as it was except the country ones, which are
-    replaced by five regional questions. Returns (payload, summary lines). Raises Abort."""
+    replaced by grouped regional questions (ONBOARDING_GROUPS). merge: (source title, target title) moves
+    one question's options into another. Returns (payload, summary lines). Raises Abort."""
     ids = ids or snowflakes()
+    renames = renames or {}
     countries = state.country_roles()
     country_role_ids = {r["id"] for r in countries.values()}
     categories = {r: state.category(norm(REGION_CATEGORY_NAMES[r])) for r in REGIONS}
@@ -654,37 +677,50 @@ def build_onboarding(state, onboarding, ids=None):
 
     summary = []
     regional_prompts = []
-    for region in REGIONS:
-        title = PROMPT_TITLE_PREFIX + region
+    existing_options = {o["title"]: o for p in existing_regional.values() for o in p["options"]}
+    rank = {c: i for i, c in enumerate(POPULATION_ORDER)}
+    for label, regions in ONBOARDING_GROUPS:
+        title = PROMPT_TITLE_PREFIX + label
         existing = existing_regional.get(title, {})
-        existing_by_title = {o["title"]: o for o in existing.get("options", [])}
+        in_group = [c for c in countries if region_of(c) in regions]
+        room = MAX_OPTIONS_PER_PROMPT - len(regions)  # one "Somewhere else" per region
+        if len(in_group) > room:
+            def priority(country):
+                role = countries[country]
+                held = state.role_counts.get(role["id"], 0) > 0 or role["id"] in state.leader_held
+                return (not held, rank.get(country, len(rank)), country)
+            chosen = set(sorted(in_group, key=priority)[:room])
+        else:
+            chosen = set(in_group)
+        left_out = sorted(set(in_group) - chosen)
         options = []
         no_channel = []
-        for country in sorted(c for c in countries if region_of(c) == region):
-            role = countries[country]
-            channel = find_child(state, categories[region]["id"], slug(country))
-            if not channel:
-                no_channel.append(country)
-            old = old_options.get(role["id"], {})
-            option = {
-                "id": old.get("id") or next(ids),
-                "title": country,
-                "description": old.get("description"),
-                "channel_ids": [(channel or others[region])["id"]],
-                "role_ids": [role["id"]],
-            }
-            emoji = to_put_option(old) if old else {}
-            if "emoji_name" in emoji or "emoji_id" in emoji:
-                option.update({k: v for k, v in emoji.items() if k.startswith("emoji_")})
-            elif country_iso(country):
-                option.update(emoji_name=flag(country_iso(country)), emoji_animated=False)
-            options.append(option)
-        somewhere = SOMEWHERE_ELSE.format(region=region)
-        options.append({
-            "id": existing_by_title.get(somewhere, {}).get("id") or next(ids),
-            "title": somewhere, "description": None, "channel_ids": [others[region]["id"]], "role_ids": [],
-            "emoji_name": REGION_EMOJI[region], "emoji_animated": False,
-        })
+        for region in regions:
+            for country in sorted(c for c in chosen if region_of(c) == region):
+                role = countries[country]
+                channel = find_child(state, categories[region]["id"], slug(country))
+                if not channel:
+                    no_channel.append(country)
+                old = old_options.get(role["id"], {})
+                option = {
+                    "id": old.get("id") or next(ids),
+                    "title": country,
+                    "description": old.get("description") or ENDONYMS.get(country),
+                    "channel_ids": [(channel or others[region])["id"]],
+                    "role_ids": [role["id"]],
+                }
+                emoji = to_put_option(old) if old else {}
+                if "emoji_name" in emoji or "emoji_id" in emoji:
+                    option.update({k: v for k, v in emoji.items() if k.startswith("emoji_")})
+                elif country_iso(country):
+                    option.update(emoji_name=flag(country_iso(country)), emoji_animated=False)
+                options.append(option)
+            somewhere = SOMEWHERE_ELSE.format(region=region)
+            options.append({
+                "id": existing_options.get(somewhere, {}).get("id") or next(ids),
+                "title": somewhere, "description": None, "channel_ids": [others[region]["id"]], "role_ids": [],
+                "emoji_name": REGION_EMOJI[region], "emoji_animated": False,
+            })
         if len(options) > MAX_OPTIONS_PER_PROMPT:
             raise Abort(f"'{title}' would have {len(options)} options, over {MAX_OPTIONS_PER_PROMPT}.")
         regional_prompts.append({
@@ -697,15 +733,48 @@ def build_onboarding(state, onboarding, ids=None):
             "options": options,
         })
         summary.append(f"  Question '{title}': {len(options)} options"
-                       + (f" (role only, pointing to #{other_channel_name(region)}: {', '.join(no_channel)})"
-                          if no_channel else ""))
+                       + (f" (role only, pointing to other-<region>: {', '.join(no_channel)})" if no_channel else "")
+                       + (f"; not listed, so 'Somewhere else': {', '.join(left_out)}" if left_out else ""))
 
     first = next((i for i, p in enumerate(prompts) if p in country_prompts), len(prompts))
     kept_before = [to_put_prompt(p) for p in prompts[:first] if p not in country_prompts]
     kept_after = [to_put_prompt(p) for p in prompts[first:] if p not in country_prompts]
+    merge_lines = []
+    if merge:
+        source_title, target_title = merge
+        kept = kept_before + kept_after
+        source = next((p for p in kept if p["title"] == source_title), None)
+        target = next((p for p in kept if p["title"] == target_title), None)
+        if source is None and target is not None:
+            pass  # Merged on an earlier run
+        elif source is None or target is None:
+            raise Abort(f"Can't merge: no question titled '{source_title if source is None else target_title}'.")
+        else:
+            taken = {o["title"] for o in target["options"]}
+            for option in source["options"]:
+                if not option.get("role_ids") and not option.get("channel_ids"):
+                    merge_lines.append(f"  Drop '{option['title']}' from '{source_title}' (gives nothing)")
+                    continue
+                option = dict(option, title=renames.get(option["title"], option["title"]))
+                if option["title"] in taken:
+                    continue
+                target["options"].append(option)
+                merge_lines.append(f"  Add '{option['title']}' to '{target_title}' (from '{source_title}')")
+            kept_before = [p for p in kept_before if p is not source]
+            kept_after = [p for p in kept_after if p is not source]
+            merge_lines.append(f"  Remove question '{source_title}' (merged into '{target_title}')")
     new_prompts = kept_before + regional_prompts + kept_after
     if len(new_prompts) > MAX_PROMPTS:
-        raise Abort(f"Onboarding would have {len(new_prompts)} questions, over {MAX_PROMPTS}.")
+        raise Abort(f"Onboarding would have {len(new_prompts)} questions, over Discord's {MAX_PROMPTS}: "
+                    + ", ".join(f"'{p['title']}'" for p in new_prompts)
+                    + ". Merge one into another with --merge-question.")
+    if any(len(p["options"]) > MAX_OPTIONS_PER_PROMPT for p in new_prompts):
+        raise Abort(f"A question would have over {MAX_OPTIONS_PER_PROMPT} options.")
+
+    defaults, hidden = [], []
+    for channel_id in onboarding.get("default_channel_ids", []):
+        (defaults if everyone_can_view(state, channel_id) else hidden).append(channel_id)
+    onboarding = dict(onboarding, default_channel_ids=defaults)
 
     lines = [f"  Remove question '{p['title']}' ({len(p['options'])} options)" for p in country_prompts
              if p["title"] not in existing_regional]
@@ -714,7 +783,12 @@ def build_onboarding(state, onboarding, ids=None):
     if dropped:
         lines.append(f"  Drop options that give no role: {', '.join(dropped)}")
     lines += summary
-    lines += [f"  Keep question '{p['title']}' unchanged" for p in kept_before + kept_after]
+    lines += merge_lines
+    lines += [f"  Keep question '{p['title']}'" for p in kept_before + kept_after]
+    if hidden:
+        lines.append("  Leave out default channels @everyone can't see (Discord requires it): "
+                     + ", ".join(f"#{state.channels[c]['name']}" if c in state.channels
+                                 else f"{c} (hidden from the bot)" for c in hidden))
     lines.append(f"  Keep {len(onboarding.get('default_channel_ids', []))} default channels, "
                  f"enabled={onboarding.get('enabled')}, mode={onboarding.get('mode')}")
     if not country_prompts:
@@ -832,6 +906,11 @@ def main(argv=None, http=None, out=print, env=os.environ):
     parser.add_argument("--onboarding", action="store_true", help="build the new onboarding config")
     parser.add_argument("--onboarding-file", default="onboarding_new.json")
     parser.add_argument("--apply-onboarding", action="store_true", help="with --onboarding: send it to Discord")
+    parser.add_argument("--merge-question", metavar="TITLE", help="with --onboarding: move this question's options "
+                        "into the one named by --into, so onboarding stays within Discord's 4 questions")
+    parser.add_argument("--into", metavar="TITLE", help="the question --merge-question's options go into")
+    parser.add_argument("--rename-option", metavar="OLD=NEW", action="append", default=[],
+                        help="rename a merged option, e.g. 'Yes=I want to volunteer'")
     parser.add_argument("--restore-layout", metavar="BACKUP", help="move channels back as in BACKUP")
     parser.add_argument("--restore-onboarding", metavar="BACKUP", help="put onboarding back as in BACKUP")
     parser.add_argument("--backup", default="country_regions_backup.json")
@@ -841,6 +920,10 @@ def main(argv=None, http=None, out=print, env=os.environ):
         parser.error("use --apply-onboarding with --onboarding (--apply is for the channel changes)")
     if args.apply_onboarding and not args.onboarding:
         parser.error("--apply-onboarding goes with --onboarding")
+    if bool(args.merge_question) != bool(args.into):
+        parser.error("--merge-question and --into go together")
+    if any("=" not in r for r in args.rename_option):
+        parser.error("--rename-option takes OLD=NEW")
 
     if http is None:
         token = env.get("DISCORD_TOKEN")
@@ -896,7 +979,9 @@ def run_onboarding(http, state, args, out):
     run = Run(http, state, args.apply_onboarding, out)
     check_bot(http, state, run, onboarding=True)
     onboarding = http.request("GET", f"/guilds/{args.guild}/onboarding")
-    payload, lines = build_onboarding(state, onboarding)
+    merge = (args.merge_question, args.into) if args.merge_question else None
+    renames = dict(r.split("=", 1) for r in args.rename_option)
+    payload, lines = build_onboarding(state, onboarding, merge=merge, renames=renames)
     Path(args.onboarding_file).write_text(json.dumps(payload, indent=2, ensure_ascii=False))
     out(f"Wrote the new onboarding config to {args.onboarding_file}. Changes from the current one:")
     out("\n".join(lines))

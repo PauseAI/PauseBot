@@ -216,9 +216,14 @@ def onboarding_after_apply(tmp_path, *extra):
     fake = FakeDiscord()
     apply(fake, tmp_path)
     before = json.loads(json.dumps(fake.onboarding))
-    code, output = run(fake, "--onboarding", *extra, tmp_path=tmp_path)
+    code, output = run(fake, "--onboarding", *MERGE, *extra, tmp_path=tmp_path)
     assert code == 0, output
     return fake, before, json.loads((tmp_path / "onboarding.json").read_text()), output
+
+
+# The fixture has two other questions; Discord allows 4 in all, so one is merged into the other
+MERGE = ("--merge-question", "How did you hear about us?", "--into", "What do you want to help with?")
+GROUP_TITLES = ["Where are you? Europe", "Where are you? Middle East & Asia-Pacific", "Where are you? Americas & Africa"]
 
 
 def test_onboarding_is_only_written_to_a_file_by_default(tmp_path):
@@ -228,15 +233,14 @@ def test_onboarding_is_only_written_to_a_file_by_default(tmp_path):
     assert fake.onboarding == before
     assert "Remove question 'Which country are you in?'" in output
     assert "Remove question 'More countries'" in output
-    assert "Question 'Where are you? Africa'" in output
+    assert "Question 'Where are you? Americas & Africa'" in output
 
 
 def test_onboarding_replaces_country_questions_and_carries_the_rest_over(tmp_path):
     fake, before, payload, output = onboarding_after_apply(tmp_path)
 
     titles = [p["title"] for p in payload["prompts"]]
-    assert titles == ["What do you want to help with?"] + [f"Where are you? {r}" for r in REGIONS] + \
-        ["How did you hear about us?"]
+    assert titles == ["What do you want to help with?"] + GROUP_TITLES
     assert payload["default_channel_ids"] == before["default_channel_ids"]
     assert payload["enabled"] is True and payload["mode"] == 1
 
@@ -248,18 +252,21 @@ def test_onboarding_replaces_country_questions_and_carries_the_rest_over(tmp_pat
                                       "channel_ids": original["options"][0]["channel_ids"], "role_ids": [],
                                       "emoji_id": "6100", "emoji_name": "protest", "emoji_animated": False}
     assert interest["options"][1]["emoji_name"] == "✍️" and "emoji_id" not in interest["options"][1]
-    assert payload["prompts"][-1]["options"] == [{"id": "8010", "title": "A friend", "description": None,
-                                                  "channel_ids": [], "role_ids": []}]
+    # 'A friend' gives no role or channel, so merging drops it with the question
+    assert "Drop 'A friend' from 'How did you hear about us?' (gives nothing)" in output
+    assert "Remove question 'How did you hear about us?'" in output
+    assert len(interest["options"]) == len(original["options"])
 
 
 def test_onboarding_regional_options(tmp_path):
     fake, before, payload, output = onboarding_after_apply(tmp_path)
-    africa = next(p for p in payload["prompts"] if p["title"] == "Where are you? Africa")
+    africa = next(p for p in payload["prompts"] if p["title"] == "Where are you? Americas & Africa")
     role = {r["name"]: r["id"] for r in fake.roles.values()}
 
     assert africa["single_select"] is False and africa["required"] is False
     by_title = {o["title"]: o for o in africa["options"]}
-    assert list(by_title) == ["Ethiopia", "Kenya", "Tunisia", "Somewhere else in Africa"]
+    assert list(by_title) == ["Argentina", "Cuba", "Dominican Republic", "United States",
+                              "Somewhere else in Americas", "Ethiopia", "Kenya", "Tunisia", "Somewhere else in Africa"]
     assert by_title["Kenya"]["role_ids"] == [role["Kenya"]]
     assert by_title["Kenya"]["channel_ids"] == [fake.channel("kenya")["id"]]
     assert by_title["Kenya"]["id"] == "8005"  # The old option's ID and emoji carry over
@@ -268,11 +275,10 @@ def test_onboarding_regional_options(tmp_path):
     assert by_title["Ethiopia"]["role_ids"] == [role["Ethiopia"]]
     assert by_title["Ethiopia"]["channel_ids"] == [fake.channel("other-africa")["id"]]
     assert by_title["Ethiopia"]["emoji_name"] == "🇪🇹"
+    # No old description, so the country's own name goes there
+    assert by_title["Ethiopia"]["description"] == "ኢትዮጵያ"
     assert by_title["Somewhere else in Africa"]["role_ids"] == []
     assert by_title["Somewhere else in Africa"]["channel_ids"] == [fake.channel("other-africa")["id"]]
-    americas = next(p for p in payload["prompts"] if p["title"] == "Where are you? Americas")
-    assert [o["title"] for o in americas["options"]] == [
-        "Argentina", "Cuba", "Dominican Republic", "United States", "Somewhere else in Americas"]
     ids = [o["id"] for p in payload["prompts"] for o in p["options"]] + [p["id"] for p in payload["prompts"]]
     assert len(ids) == len(set(ids))
 
@@ -478,3 +484,54 @@ def test_all_countries_after_a_first_run_only_adds_the_empty_ones(tmp_path):
     added = [c["name"] for c in fake.channels.values() if c["id"] not in before]
     assert added == ["ethiopia"]
     assert "Post welcome" not in output
+
+
+def test_onboarding_over_four_questions_stops_and_says_how_to_merge(tmp_path):
+    fake = FakeDiscord()
+    apply(fake, tmp_path)
+    code, output = run(fake, "--onboarding", tmp_path=tmp_path)
+    assert code == 1 and "over Discord's 4" in output and "--merge-question" in output
+    assert not (tmp_path / "onboarding.json").exists()
+
+
+def test_merged_options_keep_their_role_and_can_be_renamed(tmp_path):
+    fake = FakeDiscord()
+    apply(fake, tmp_path)
+    volunteer = next(r for r in fake.roles.values() if r["name"] == "California")["id"]
+    fake.onboarding["prompts"][-1]["options"].append(
+        {"id": "8098", "title": "Yes", "description": None, "role_ids": [volunteer], "channel_ids": [], "emoji": None})
+    code, output = run(fake, "--onboarding", *MERGE, "--rename-option", "Yes=I want to volunteer", tmp_path=tmp_path)
+    assert code == 0, output
+    payload = json.loads((tmp_path / "onboarding.json").read_text())
+    interest = payload["prompts"][0]
+    added = next(o for o in interest["options"] if o["title"] == "I want to volunteer")
+    assert added["role_ids"] == [volunteer] and added["id"] == "8098"
+    assert "How did you hear about us?" not in [p["title"] for p in payload["prompts"]]
+
+
+def test_a_full_group_lists_countries_with_members_first_then_the_most_populous(tmp_path, monkeypatch):
+    fake = FakeDiscord()
+    apply(fake, tmp_path)
+    monkeypatch.setattr(cr, "MAX_OPTIONS_PER_PROMPT", 6)  # Americas & Africa: room for 4 countries
+    code, output = run(fake, "--onboarding", *MERGE, tmp_path=tmp_path)
+    assert code == 0, output
+    payload = json.loads((tmp_path / "onboarding.json").read_text())
+    group = next(p for p in payload["prompts"] if p["title"] == "Where are you? Americas & Africa")
+    titles = [o["title"] for o in group["options"]]
+    # Members first: Argentina, Cuba, Dominican Republic, Kenya, Tunisia, United States hold roles in the fixture;
+    # of those, the most populous four fit
+    assert len(titles) == 6 and titles[-1] == "Somewhere else in Africa"
+    assert "Ethiopia" not in titles and "not listed, so 'Somewhere else'" in output
+
+
+def test_default_channels_everyone_cant_see_are_left_out(tmp_path):
+    fake = FakeDiscord()
+    apply(fake, tmp_path)
+    welcome = fake.channel("welcome")
+    welcome["permission_overwrites"] = [{"id": fake.guild_id, "type": 0, "allow": "0", "deny": "1024"}]
+    fake.onboarding["default_channel_ids"].append("9999")  # A channel the bot can't see
+    code, output = run(fake, "--onboarding", *MERGE, tmp_path=tmp_path)
+    assert code == 0, output
+    payload = json.loads((tmp_path / "onboarding.json").read_text())
+    assert welcome["id"] not in payload["default_channel_ids"] and "9999" not in payload["default_channel_ids"]
+    assert "Leave out default channels @everyone can't see" in output and "#welcome" in output

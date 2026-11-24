@@ -138,7 +138,7 @@ To capture the dashboard settings as a file later, run `railway config pull` wit
 5. Posts a welcome in each new country channel, pinging only that country's role.
 6. Deletes the two old categories, only once they're empty. It deletes nothing else.
 
-Onboarding is a separate step: it replaces the country questions with five optional multi-select questions, "Where are you? Europe" and so on. Each has one option per country role in the region, giving the role and the country's channel. A role with no channel gives the role and `other-<region>`. The last option, "Somewhere else in <region>", gives only `other-<region>`. Every other question, the default channels and the onboarding settings are carried over unchanged, since Discord replaces the whole onboarding config at once.
+Onboarding is a separate step. Discord allows at most 4 questions with 50 answers each, so it replaces the country questions with three optional multi-select ones: "Where are you? Europe", "Where are you? Middle East & Asia-Pacific" and "Where are you? Americas & Africa" (`ONBOARDING_GROUPS` in the table). Each country option gives its role and its channel, with the country's own name as the description where the old option had none. Each region ends with "Somewhere else in <region>", which gives only `other-<region>`. A group with more countries than fit lists those with members first, then the most populous; the rest use "Somewhere else". To stay within 4 questions, merge one of the other questions into another with `--merge-question "<title>" --into "<title>"` (options that give nothing are dropped; rename one with `--rename-option "Yes=I want to volunteer"`). Default channels @everyone can't see are left out, as Discord refuses them. Every other question, the default channels and the onboarding settings are carried over unchanged, since Discord replaces the whole onboarding config at once.
 
 Everything is read from the live server on each run, so after a partial failure, run it again: steps already done are skipped. The script needs only Python 3 (no packages) and reads the token from `DISCORD_TOKEN`, which it never prints.
 
@@ -176,7 +176,7 @@ Everything is read from the live server on each run, so after a partial failure,
 3. Build the new onboarding config. This writes it to `onboarding_new.json` and lists what changes, without sending anything:
 
    ```bash
-   python3 jobs/country_regions.py --onboarding
+   python3 jobs/country_regions.py --onboarding --merge-question "Do you want to volunteer for Pause AI?" --into "What are you interested in?"
    ```
 
    If a country question also has an option giving a role that isn't a country in the table, it stops and names the option, so nothing is lost: move that option to another question by hand, or add the country to the table. Options that give no role (such as a "not listed? ask here" one) are dropped, and listed.
