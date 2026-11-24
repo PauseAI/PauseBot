@@ -24,8 +24,6 @@ from jobs.country_regions_table import REGIONS, COUNTRIES, ENDONYMS
 PREFIX = "country_finder"
 MAX_OPTIONS = 25  # Discord's limit for one select menu
 REGION_EMOJI = {"Europe": "🌍", "Americas": "🌎", "Africa": "🌍", "Middle East": "🌍", "Asia-Pacific": "🌏"}
-# Codes that aren't a Unicode flag (Kosovo's is user-assigned), which Discord would refuse as an emoji
-NO_FLAG = {"XK"}
 
 # Each country added can ping its greeters and email its coordinator, so a member is held back after
 # this many countries added or removed in this many seconds (a dropdown can tick up to 25 at once)
@@ -111,7 +109,7 @@ def region_view(region_index, roles, held):
             iso = iso_of(name)
             options.append(discord.SelectOption(
                 label=name, value=name, description=ENDONYMS.get(name),
-                emoji=flag(iso) if iso and iso not in NO_FLAG else None, default=name in held))
+                emoji=flag(iso) if iso else None, default=name in held))
         if not options:
             continue
         view.add_item(discord.ui.Select(

@@ -156,7 +156,7 @@ async def test_region_button_opens_its_countries_privately_with_held_ones_ticked
     assert set(options) == set(COUNTRIES["Europe"])
     assert [n for n, o in options.items() if o.default] == ["United Kingdom"]
     assert str(options["France"].emoji) == "🇫🇷"
-    assert options["Kosovo"].emoji is None  # not a Unicode flag
+    assert str(options["Kosovo"].emoji) == "🇽🇰"  # Discord's Twemoji has it
     assert options["Germany"].description == "Deutschland"
     assert first.min_values == 0 and first.max_values == len(first.options)
 
