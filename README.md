@@ -117,12 +117,12 @@ The bot and Postgres are in US West (California). A move to EU West is planned (
 - **Build**: Railpack 0.43 (the default builder). There's no Dockerfile for the bot. Python 3.13.18, Railpack's default 3.13; the repo doesn't pin it, but it needs 3.13 or later because `audioop-lts` only installs there. Install step: `python -m venv /app/.venv`, then `pip install -r requirements.txt`. No custom build command.
 - **Start command**: `python main.py`, chosen by Railpack (no Custom Start Command).
 - **Networking**: `aiohttp` on `0.0.0.0:$PORT`, serving `GET /` (status), `POST /webhook/add_role` and `GET /stats/discord`. A public Railway domain, routed to port 8080; private `pausebot.railway.internal`. No static outbound IPs.
-- **Healthcheck**: none set. `GET /` answers 200 once the web server is up, even before the bot has logged in to Discord, and doesn't check the database, so it isn't a good readiness check.
+- **Healthcheck**: none set. `GET /` answers 200 once the web server is up, which is after the bot's token is accepted but before it has connected to Discord's gateway or the database, and it doesn't check the database, so it isn't a good readiness check.
 - **Restart policy**: On Failure, up to 10 retries.
 - **Region and replicas**: US West (California), 1 replica, not serverless. Run one replica only: two would both answer Discord events and both run the scheduled jobs. Teardown (deploy overlap and draining) is off.
 - **Volumes**: none. The bot keeps nothing on disk; its data is in Postgres.
 - **Scheduled work**: none on Railway (no cron). The daily server snapshot and prune is a `discord.ext.tasks` loop inside the bot (`daily_snapshot_and_prune`). It runs at startup and then every 24 hours, so its time of day is set by the last restart (around 18:48 UTC as of November 2026). The same loop deletes the bot's log channel posts whose oldest quoted message was sent over 30 days ago. The startup run skips a server already snapshotted in the last 20 hours, so a restart within 20 hours of the last snapshot can leave a gap of up to about 44 hours. The CiviCRM link sweep is another in-process loop, hourly.
-- **Variables**: `DATABASE_URL` is a reference, `${{Postgres.DATABASE_URL}}`. Set as values: `DISCORD_TOKEN`, `MAILERSEND_API_KEY`, `PORT` (8080), `WEBHOOK_SECRET`, `STATS_SECRET`, `CIVICRM_URL` and `CIVICRM_API_KEY` (without either of the last two, the bot starts but quietly never links members to CiviCRM). `DEVELOPER_MODE` is not set, which means off; leave it unset in production.
+- **Variables**: `DATABASE_URL` is a reference, `${{Postgres.DATABASE_URL}}`. Set as values: `DISCORD_TOKEN`, `MAILERSEND_API_KEY`, `PORT` (8080), `WEBHOOK_SECRET`, `STATS_SECRET`, `CIVICRM_URL` and `CIVICRM_API_KEY` (without either of the last two, the bot starts but quietly never links members to CiviCRM). Also set, since this list was first read: `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`, `MESSAGE_LOG_CHANNEL_ID` and `MESSAGE_LOG_IGNORE_IDS` (checked 24 November 2026). `DEVELOPER_MODE` is not set, which means off; leave it unset in production.
 - `MAILERSEND_API_KEY` has to be replaced before MailerSend closes on 11 December 2026 (infrastructure plan 4.3/4.6).
 
 **Postgres**: US West (California), with the volume `postgres-volume`.
@@ -136,6 +136,8 @@ The bot and Postgres are in US West (California). A move to EU West is planned (
 - **Healthcheck**: none.
 - **Region**: EU West (Amsterdam).
 - **Variables**: `BACKUP_NAME`, `DATABASE_URL`, `BACKUP_AGE_RECIPIENTS`, `BACKUP_B2_REGION`, `BACKUP_B2_BUCKET`, `BACKUP_B2_KEY_ID`, `BACKUP_B2_SECRET`, `BACKUP_HEALTHCHECK_URL`. They're documented with the image.
+
+A cold standby on Render (Frankfurt) is described in `render.yaml`, with its rehearsal and failover runbook in [docs/standby-render.md](docs/standby-render.md). Nothing on Render exists between rehearsals.
 
 To capture the dashboard settings as a file later, run `railway config pull` with the Railway CLI. It writes the project's current settings to `.railway/railway.ts`, Railway's [Infrastructure as Code](https://docs.railway.com/infrastructure-as-code) format.
 
@@ -240,4 +242,4 @@ If you get `CERTIFICATE_VERIFY_FAILED` on a Mac, your Python from python.org has
 
 Backups aren't run from this repo. PauseBot's Railway "backup" service runs PauseAI/infra's backup-image: each night it dumps this database, encrypts the dump with age and uploads it to Backblaze B2, where Object Lock keeps it for 30 days. How it's set up, its variables, and how to download, decrypt and restore a dump are in the [backup-image README](https://github.com/PauseAI/infra/blob/main/backup-image/README.md) (see [Restoring](https://github.com/PauseAI/infra/blob/main/backup-image/README.md#restoring)).
 
-Dumps contain the 30-day message log, so a dump holds members' messages. Restore on a trusted machine, not in a checkout an AI agent can read, and delete the downloaded file and the age identity file afterwards.
+Dumps contain the 30-day message log, so a dump holds members' messages. Restore on a trusted machine, not in a checkout an AI agent can read, and delete the downloaded file and the age identity file afterwards. To restore a dump into a standby on Render, follow [docs/standby-render.md](docs/standby-render.md).
