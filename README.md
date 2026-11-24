@@ -5,7 +5,8 @@ PauseBot is a Discord bot designed to streamline the onboarding pipeline for Pau
 ## Features
 
 - **Automatic Onboarding Emails**: Monitors new users and waits a few minutes. If a user is given a registered country role, an email is automatically sent to the country's coordinator.
-- **Member Records**: Keeps each member's details (Discord ID, username, nick, global name, join and leave dates, and roles) in Postgres. When someone rejoins, the roles they had are given back (except any that `is_role_safe_to_grant` refuses).
+- **Country Finder**: Members pick their country roles at any time, including the countries Discord onboarding has no room for. See [Country finder](#country-finder).
+- **Member Records**: Keeps each member's details (Discord ID, username, nick, global name, join and leave dates, and roles) in Postgres. When someone rejoins, the roles they had are given back (except any that `is_role_safe_to_grant` refuses). Saved roles are only given back on joining, never when the record is saved later, so a role someone dropped stays dropped.
 - **CiviCRM Linking**: Asks CiviCRM to link each member to their member record by Discord username, on join, and in an hourly sweep (also run at startup) that sends everyone in the server not linked yet in batches of 500.
 - **Webhook to Discord Syncing**: Exposes a secure REST endpoint (`/webhook/add_role`) that accepts POST requests authenticated with a `WEBHOOK_SECRET`. CiviCRM calls it to give the volunteer role to linked members once they're verified and have signed the Volunteer Agreement.
 - **Dashboard Stats**: `GET /stats/discord`, authenticated with `Authorization: Bearer <STATS_SECRET>`, answers aggregate counts of the member records for the onboarding dashboard: joins and leaves per month, current members, onboarding pings and reactions, and current members per role ID. It never answers anything about one person.
@@ -15,6 +16,18 @@ PauseBot is a Discord bot designed to streamline the onboarding pipeline for Pau
 - **Server Snapshots** (replacing Xenon): Once a day, saves the server's roles, channels and permission overwrites, member roles and nicknames, and bans to Postgres. Kept for 30 days.
 - **Message Log** (replacing Quark): Stores every server message, its edits and when it was deleted in Postgres. Kept for 30 days from when the message was sent.
 - **Log Channel** (replacing Quark's posts in #logs): With `MESSAGE_LOG_CHANNEL_ID` set, posts each message edit (author, channel or thread, old and new text, link) and deletion (author, channel or thread, the text as last logged, attachment names, when it was sent) to that channel, from what the message log holds. A message deleted before its log write landed (e.g. an instant auto-delete) is taken from the bot's message cache instead, and logged as deleted. Bulk deletions post every message it has and a count of the rest. It leaves out internal channels (see `MESSAGE_LOG_IGNORE_IDS`), bots' messages, events in the log channel itself, edits of messages the log doesn't have, and single deletions of messages neither the log nor the cache has (sent over 30 days ago, or while the bot was down). Quoted text sits in a code block, so it can't pass for the post's own lines; it's cut to fit Discord's embed limits, and posts never ping anyone. The bot records each post in the `log_posts` table (no message text), and each daily run deletes the posts whose oldest quoted message was sent over 30 days ago, so the channel keeps message text no longer than the database does. A post only bundles messages sent on the same day, so none goes more than a day early. In the log channel the bot needs View Channel, Send Messages, Embed Links and Read Message History.
+
+## Country finder
+
+Discord onboarding allows 4 questions and 12 answers per multiple-choice question, so it lists only countries that already have members; everyone else picks "Somewhere else in <region>". The finder lists every country in `jobs/country_regions_table.py` (171, in five regions).
+
+- **The message**: an admin runs `/country_finder_post` in the channel it should live in (#welcome). It needs Manage Server. The bot posts a message with one button per region. Its buttons keep working after restarts and redeploys, since the bot answers them by ID rather than remembering the message. To move it, post it again and delete the old one.
+- **Picking**: a region button answers privately with that region's countries in one or two dropdowns (Discord allows 25 per dropdown, so Europe, the Americas, Africa and Asia-Pacific are split alphabetically), with the member's own countries ticked. Ticking a country gives its role and points to its channel; unticking takes the role away. Members can hold more than one country, as with onboarding.
+- **`/country`**: opens the same region buttons privately. `/country name:<country>` (with autocomplete, which also knows each country's own name, e.g. "Deutschland") gives that one country straight away.
+- **Safety**: it only gives or takes roles named in the table, and only those that pass `is_role_safe_to_grant` and sit below the bot's own role. A member can make 6 changes in 10 minutes, since each new country can ping its greeters and email its coordinator; after that it asks them to wait.
+- **Onboarding pings**: a country given by the finder is handled like one picked in onboarding: the onboarding ping, emails and country DMs come from `on_member_update` as before.
+
+The bot needs Send Messages in the channel it posts in. #welcome denies it to @everyone, so give the PauseBot role a Send Messages overwrite there first (Edit Channel > Permissions).
 
 ## Prerequisites
 

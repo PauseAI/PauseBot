@@ -15,6 +15,7 @@ from snapshot import take_snapshot
 import onboarding
 import civicrm
 import members
+import country_finder
 import modlog
 # Load environment variables from .env file
 load_dotenv()
@@ -278,10 +279,12 @@ def role_lists(roles):
     roles = [r for r in roles if not r.is_default()]
     return [r.id for r in roles], [r.name for r in roles]
 
-async def sync_member_record(member, onboarding_notification=False):
-    """Saves the member's record, first giving back any saved roles they don't have (e.g. after
-    leaving and rejoining) that are safe to grant."""
-    saved = await db.saved_roles(db_pool, member.id)
+async def sync_member_record(member, onboarding_notification=False, restore_roles=False):
+    """Saves the member's record. With restore_roles (only when they've just joined), first gives back
+    any saved roles they don't have, such as after leaving and rejoining, that are safe to grant.
+    Never restoring otherwise means a role a member dropped (say, a country they unticked in the
+    country finder) isn't given back the next time their record is saved."""
+    saved = await db.saved_roles(db_pool, member.id) if restore_roles else None
     roles = list(member.roles)
     if saved:
         to_restore = [r for r in members.roles_to_restore(member.guild, *saved)
@@ -392,7 +395,7 @@ async def startup_sync_recent_members():
         for member in guild.members:
             if member.joined_at and (now - member.joined_at) <= delta:
                 try:
-                    await sync_member_record(member)
+                    await sync_member_record(member, restore_roles=True)
                     synced_count += 1
                     await asyncio.sleep(0.5)
                 except Exception as e:
@@ -408,7 +411,7 @@ async def _handle_member_join(member):
     if not member:
         return
     try:
-        await sync_member_record(member)
+        await sync_member_record(member, restore_roles=True)
         if CIVICRM_URL and CIVICRM_API_KEY:
             reason = await link_to_civicrm(member)
             if reason:
@@ -695,7 +698,7 @@ async def sync_recent_cmd(interaction: discord.Interaction, minutes: float = 60.
     for m in interaction.guild.members:
         if m.joined_at and (now - m.joined_at) <= delta:
             try:
-                await sync_member_record(m)
+                await sync_member_record(m, restore_roles=True)
                 synced_count += 1
                 await asyncio.sleep(0.5)
             except Exception as e:
@@ -750,6 +753,56 @@ async def sync_old_notifications_cmd(interaction: discord.Interaction, limit: in
     updated = await db.set_flag(db_pool, "onboarding_notification", notified)
     await db.set_flag(db_pool, "discord_reaction", reacted)
     await interaction.followup.send(content=f"✅ Finished! Updated {updated} of the {len(notified)} users' records.")
+
+@bot.tree.command(name='country', description="Pick your country, to get its role and its channel.")
+@app_commands.describe(name="Your country. Leave it empty to browse by region.")
+async def country_cmd(interaction: discord.Interaction, name: str | None = None):
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return
+    if not is_active_guild(interaction.guild.id):
+        await interaction.response.send_message("❌ Not available on this server.", ephemeral=True)
+        return
+    if name:
+        await country_finder.add_country(interaction, is_role_safe_to_grant, name)
+    else:
+        await interaction.response.send_message(country_finder.INTRO, view=country_finder.region_buttons(),
+                                                ephemeral=True)
+
+@country_cmd.autocomplete('name')
+async def country_cmd_autocomplete(interaction: discord.Interaction, current: str):
+    if not interaction.guild:
+        return []
+    roles = country_finder.country_roles(interaction.guild, is_role_safe_to_grant)
+    return [app_commands.Choice(name=n, value=n) for n in country_finder.autocomplete(roles, current)]
+
+@bot.tree.command(name='country_finder_post', description="Posts the country finder in this channel.")
+@app_commands.default_permissions(manage_guild=True)
+async def country_finder_post(interaction: discord.Interaction):
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return
+    if not is_active_guild(interaction.guild.id):
+        await interaction.response.send_message("❌ Not available on this server.", ephemeral=True)
+        return
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        await interaction.response.send_message("❌ You need Manage Server to post the country finder.", ephemeral=True)
+        return
+    try:
+        await interaction.channel.send(country_finder.INTRO, view=country_finder.region_buttons())
+    except discord.HTTPException as e:
+        await interaction.response.send_message(f"❌ Couldn't post here: {e.text or e}", ephemeral=True)
+        return
+    await interaction.response.send_message("✅ Posted. Its buttons keep working after the bot restarts.", ephemeral=True)
+
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    # Slash commands are answered by bot.tree; this only picks up the country finder's buttons and dropdowns
+    if not is_active_guild(interaction.guild_id):
+        return
+    try:
+        await country_finder.handle_interaction(interaction, is_role_safe_to_grant)
+    except Exception as e:
+        print(f"Country finder error for {interaction.user}: {e!r}")
 
 @bot.event
 async def on_raw_reaction_add(payload):
