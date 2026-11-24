@@ -1,4 +1,5 @@
 """The country finder (country_finder.py): region buttons, country dropdowns and /country."""
+import asyncio
 import datetime
 import itertools
 from types import SimpleNamespace as NS
@@ -34,28 +35,40 @@ class Role:
 class Member:
     def __init__(self, *roles):
         self.id, self.name, self.roles = next(IDS), "pat", list(roles)
-        self.added, self.removed, self.fail = [], [], False
+        self.added, self.removed, self.fail = [], [], set()
 
     async def add_roles(self, *roles, reason=None):
-        if self.fail:
+        if any(r.name in self.fail for r in roles):
             raise discord.HTTPException(NS(status=500, reason="oops"), "oops")
         self.added.append(([r.name for r in roles], reason))
         self.roles += roles
 
     async def remove_roles(self, *roles, reason=None):
+        if any(r.name in self.fail for r in roles):
+            raise discord.HTTPException(NS(status=403, reason="Forbidden"), "no")
         self.removed.append(([r.name for r in roles], reason))
         self.roles = [r for r in self.roles if r not in roles]
 
 
 class Response:
+    """interaction.response, plus the calls made after deferring (edit_original_response, followup)."""
+
     def __init__(self):
-        self.sent, self.edited = [], []
+        self.sent, self.edited, self.deferred = [], [], []
 
     async def send_message(self, content=None, **kwargs):
         self.sent.append((content, kwargs))
 
-    async def edit_message(self, **kwargs):
+    async def defer(self, **kwargs):
+        self.deferred.append(kwargs)
+
+    async def edit_original_response(self, **kwargs):
+        assert self.deferred, "edit_original_response before the interaction was answered"
         self.edited.append(kwargs)
+
+    async def send(self, content=None, **kwargs):  # followup.send
+        assert self.deferred, "followup before the interaction was answered"
+        self.sent.append((content, kwargs))
 
 
 def make_guild(*extra_roles):
@@ -69,7 +82,9 @@ def interaction(guild, member, custom_id, values=None, kind=discord.InteractionT
     data = {"custom_id": custom_id}
     if values is not None:
         data["values"] = values
-    return NS(type=kind, data=data, guild=guild, guild_id=guild.id, user=member, response=Response())
+    response = Response()
+    return NS(type=kind, data=data, guild=guild, guild_id=guild.id, user=member, response=response,
+              followup=response, edit_original_response=response.edit_original_response)
 
 
 @pytest.fixture(autouse=True)
@@ -198,6 +213,7 @@ async def test_unticking_removes_only_that_pages_countries_and_keeps_other_roles
     await cf.handle_interaction(i, main.is_role_safe_to_grant)
     assert member.added == [(["Albania"], cf.AUDIT_REASON)]
     assert member.removed == [(["Austria"], cf.AUDIT_REASON)]
+    assert i.response.deferred == [{}]  # answered before the role calls, which can take seconds
     assert {r.name for r in member.roles} == {"Albania", "Belgium", other_page_country, "Brazil", "Wants to volunteer"}
 
 
@@ -219,7 +235,7 @@ async def test_an_unsafe_country_role_a_member_holds_is_never_removed():
     assert member.removed == []
 
 
-async def test_changes_stop_after_the_limit():
+async def test_toggling_stops_after_the_limit():
     guild, roles = make_guild()
     member = Member()
     for n in range(cf.CHANGE_LIMIT + 1):
@@ -228,26 +244,52 @@ async def test_changes_stop_after_the_limit():
         member.roles = [roles["Germany"]] if n % 2 else []
         await cf.handle_interaction(i, main.is_role_safe_to_grant)
     assert len(member.added) + len(member.removed) == cf.CHANGE_LIMIT
-    assert "a lot just now" in i.response.edited[0]["content"]
+    assert "more changes than I can make" in i.response.edited[0]["content"]
+
+
+async def test_the_limit_counts_each_country_not_each_dropdown():
+    guild, roles = make_guild()
+    member = Member()
+    page = cf.region_pages("Europe")[0]
+    i = interaction(guild, member, pick_id("Europe", page[0]), page)  # every country on the page
+    await cf.handle_interaction(i, main.is_role_safe_to_grant)
+    assert member.added == []
+    assert "more changes than I can make" in i.response.edited[0]["content"]
+    i = interaction(guild, member, pick_id("Europe", page[0]), page[:cf.CHANGE_LIMIT])
+    await cf.handle_interaction(i, main.is_role_safe_to_grant)
+    assert len(member.added) == cf.CHANGE_LIMIT
 
 
 def test_the_limit_lifts_after_the_window():
     now = [0]
-    limiter = cf.ChangeLimiter(limit=1, window=10, clock=lambda: now[0])
-    assert limiter.allow(1) and not limiter.allow(1) and limiter.allow(2)
+    limiter = cf.ChangeLimiter(limit=2, window=10, clock=lambda: now[0])
+    assert not limiter.allow(1, 3) and limiter.allow(1, 2) and not limiter.allow(1) and limiter.allow(2)
     now[0] = 11
-    assert limiter.allow(1)
+    assert limiter.allow(1, 2)
 
 
 async def test_a_failed_role_change_says_so():
     guild, roles = make_guild()
     member = Member()
-    member.fail = True
+    member.fail = {"Germany"}
     i = interaction(guild, member, pick_id("Europe", "Germany"), ["Germany"])
     await cf.handle_interaction(i, main.is_role_safe_to_grant)
     edit, = i.response.edited
-    assert "didn't work" in edit["content"]
+    assert "couldn't change **Germany**" in edit["content"]
     assert not any(o.default for s in selects(edit["view"]) for o in s.options)
+
+
+async def test_a_partial_failure_shows_what_did_change():
+    guild, roles = make_guild()
+    member = Member(roles["France"])
+    member.fail = {"France"}  # removing it is refused
+    i = interaction(guild, member, pick_id("Europe", "France"), ["Belgium"])  # same page as France
+    await cf.handle_interaction(i, main.is_role_safe_to_grant)
+    edit, = i.response.edited
+    new = member.added[0][0][0]
+    assert f"You're now in **{new}**" in edit["content"] and "couldn't change **France**" in edit["content"]
+    ticked = {o.value for s in selects(edit["view"]) for o in s.options if o.default}
+    assert ticked == {"France", new}
 
 
 async def test_other_interactions_are_left_alone():
@@ -333,3 +375,20 @@ async def test_a_rejoining_member_still_gets_their_saved_roles_back(pool, monkey
     member.roles = []
     await main.sync_member_record(member, restore_roles=True)
     assert member.added == [(["United Kingdom"], None)]
+
+
+async def test_a_dropped_country_is_saved_so_a_join_time_restore_cant_give_it_back(pool, monkeypatch):
+    monkeypatch.setattr(main, "db_pool", pool)
+    uk = Role("United Kingdom")
+    guild = NS(id=main.PAUSEAI_SERVER_ID, roles=[uk], get_role=lambda rid: uk if rid == uk.id else None)
+    before = record_member(guild, uk)
+    before.pending = False
+    await main.sync_member_record(before)
+    after = record_member(guild)
+    after.id, after.pending = before.id, False
+    await main.on_member_update(before, after)
+    await asyncio.gather(*main.background_tasks)
+    assert (await db.saved_roles(pool, after.id))[1] == []
+    # Say the bot restarts minutes after they joined: the startup sync restores saved roles
+    await main.sync_member_record(after, restore_roles=True)
+    assert after.added == []

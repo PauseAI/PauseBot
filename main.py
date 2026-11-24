@@ -484,6 +484,13 @@ async def on_member_update(before, after):
     if getattr(before, 'pending', False) and not getattr(after, 'pending', False):
         schedule_welcome_dm(after)
 
+    # A dropped role is saved straight away, so a later join-time restore (startup sync, /sync_recent)
+    # doesn't give back, say, a country the member unticked in the country finder
+    if any(role not in after.roles for role in before.roles):
+        task = asyncio.create_task(save_record_safely(after))
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+
     # Check if any new roles were added
     new_roles = [role for role in after.roles if role not in before.roles]
     added_country_roles = [role for role in new_roles if role.id in COUNTRY_DATA]
@@ -578,6 +585,12 @@ async def on_member_update(before, after):
 
     print(f"User {after.name} received country role(s)! Updating their record and notifying coordinators.")
     await sync_member_record(after, onboarding_notification=onboarding_notification)
+
+async def save_record_safely(member):
+    try:
+        await sync_member_record(member)
+    except Exception as e:
+        print(f"Error saving {member.name}'s record after a role was removed: {e}")
 
 @bot.event
 async def on_member_remove(member):
@@ -755,6 +768,7 @@ async def sync_old_notifications_cmd(interaction: discord.Interaction, limit: in
     await interaction.followup.send(content=f"✅ Finished! Updated {updated} of the {len(notified)} users' records.")
 
 @bot.tree.command(name='country', description="Pick your country, to get its role and its channel.")
+@app_commands.guild_only()
 @app_commands.describe(name="Your country. Leave it empty to browse by region.")
 async def country_cmd(interaction: discord.Interaction, name: str | None = None):
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -776,6 +790,7 @@ async def country_cmd_autocomplete(interaction: discord.Interaction, current: st
     return [app_commands.Choice(name=n, value=n) for n in country_finder.autocomplete(roles, current)]
 
 @bot.tree.command(name='country_finder_post', description="Posts the country finder in this channel.")
+@app_commands.guild_only()
 @app_commands.default_permissions(manage_guild=True)
 async def country_finder_post(interaction: discord.Interaction):
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -787,12 +802,13 @@ async def country_finder_post(interaction: discord.Interaction):
     if not (perms.administrator or perms.manage_guild):
         await interaction.response.send_message("❌ You need Manage Server to post the country finder.", ephemeral=True)
         return
+    await interaction.response.defer(ephemeral=True)
     try:
         await interaction.channel.send(country_finder.INTRO, view=country_finder.region_buttons())
     except discord.HTTPException as e:
-        await interaction.response.send_message(f"❌ Couldn't post here: {e.text or e}", ephemeral=True)
+        await interaction.followup.send(f"❌ Couldn't post here: {e.text or e}", ephemeral=True)
         return
-    await interaction.response.send_message("✅ Posted. Its buttons keep working after the bot restarts.", ephemeral=True)
+    await interaction.followup.send("✅ Posted. Its buttons keep working after the bot restarts.", ephemeral=True)
 
 @bot.event
 async def on_interaction(interaction: discord.Interaction):

@@ -27,9 +27,9 @@ REGION_EMOJI = {"Europe": "🌍", "Americas": "🌎", "Africa": "🌍", "Middle 
 # Codes that aren't a Unicode flag (Kosovo's is user-assigned), which Discord would refuse as an emoji
 NO_FLAG = {"XK"}
 
-# Each change of a member's countries can ping their country's greeters and send an email, so a
-# member flipping roles on and off is held back after this many changes in this many seconds
-CHANGE_LIMIT = 6
+# Each country added can ping its greeters and email its coordinator, so a member is held back after
+# this many countries added or removed in this many seconds (a dropdown can tick up to 25 at once)
+CHANGE_LIMIT = 10
 CHANGE_WINDOW = 600
 
 AUDIT_REASON = "Country finder: the member chose their countries"
@@ -155,22 +155,23 @@ def status_text(guild, added, removed):
 
 
 class ChangeLimiter:
-    """Remembers when each member last changed their countries, in memory."""
+    """Remembers when each member's countries were added or removed, in memory."""
 
     def __init__(self, limit=CHANGE_LIMIT, window=CHANGE_WINDOW, clock=time.monotonic):
         self.limit, self.window, self.clock = limit, window, clock
         self.times = collections.defaultdict(collections.deque)
 
-    def allow(self, member_id):
+    def allow(self, member_id, cost=1):
+        """Whether `cost` more changes fit in the member's window; if so, counts them."""
         now = self.clock()
         times = self.times[member_id]
         while times and now - times[0] > self.window:
             times.popleft()
-        if not times:
-            del self.times[member_id]
-        if len(times) >= self.limit:
+        if len(times) + cost > self.limit:
+            if not times:
+                del self.times[member_id]
             return False
-        self.times[member_id].append(now)
+        times.extend([now] * cost)
         return True
 
 
@@ -217,25 +218,38 @@ async def handle_interaction(interaction, is_safe):
     _, index, page = parsed
     chosen = [v for v in (interaction.data or {}).get("values", []) if v in roles]
     add, remove = changes(held, [n for n in region_pages(REGIONS[index])[page] if n in roles], chosen)
+    # Each role is its own API call, which can outlast Discord's 3 seconds for a first answer
+    await interaction.response.defer()
     if not add and not remove:
         status = "No change."
-    elif not limiter.allow(member.id):
-        status = "You've changed your countries a lot just now. Try again in a few minutes."
+    elif not limiter.allow(member.id, len(add) + len(remove)):
+        status = (f"That's more changes than I can make right now (up to {CHANGE_LIMIT} countries every "
+                  f"{CHANGE_WINDOW // 60} minutes). Try fewer, or try again in a few minutes.")
     else:
-        try:
-            if add:
-                await member.add_roles(*(roles[n] for n in add), reason=AUDIT_REASON)
-                held |= set(add)
-            if remove:
-                await member.remove_roles(*(roles[n] for n in remove), reason=AUDIT_REASON)
-                held -= set(remove)
-            status = status_text(guild, add, remove)
-        except discord.HTTPException as e:
-            print(f"Country finder: couldn't change {member.name}'s countries: {e}")
-            status = "Sorry, that didn't work. Try again, or ask a moderator."
-    await interaction.response.edit_message(
+        added, removed, failed = await apply(member, roles, add, remove)
+        held = (held | set(added)) - set(removed)
+        status = status_text(guild, added, removed)
+        if failed:
+            status = (status + "\n" if added or removed else "") + (
+                f"Sorry, I couldn't change {', '.join(f'**{n}**' for n in failed)}. Try again, or ask a moderator.")
+    await interaction.edit_original_response(
         content=region_text(index, roles, status), view=region_view(index, roles, held))
     return True
+
+
+async def apply(member, roles, add, remove):
+    """Adds and removes each country's role on its own, so a failure leaves the rest done and
+    known. Returns (added, removed, failed) country names."""
+    added, removed, failed = [], [], []
+    for names, change, done in ((add, member.add_roles, added), (remove, member.remove_roles, removed)):
+        for name in names:
+            try:
+                await change(roles[name], reason=AUDIT_REASON)
+                done.append(name)
+            except discord.HTTPException as e:
+                print(f"Country finder: couldn't change {name} for {member.name}: {e}")
+                failed.append(name)
+    return added, removed, failed
 
 
 async def add_country(interaction, is_safe, name):
@@ -255,14 +269,11 @@ async def add_country(interaction, is_safe, name):
         await interaction.response.send_message(
             "You've changed your countries a lot just now. Try again in a few minutes.", ephemeral=True)
         return
-    try:
-        await member.add_roles(roles[match], reason=AUDIT_REASON)
-    except discord.HTTPException as e:
-        print(f"Country finder: couldn't give {member.name} {match}: {e}")
-        await interaction.response.send_message("Sorry, that didn't work. Try again, or ask a moderator.",
-                                                ephemeral=True)
-        return
-    await interaction.response.send_message(status_text(guild, [match], []), ephemeral=True)
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    added, _, _ = await apply(member, roles, [match], [])
+    await interaction.followup.send(
+        status_text(guild, added, []) if added else "Sorry, that didn't work. Try again, or ask a moderator.",
+        ephemeral=True)
 
 
 def autocomplete(roles, current, limit=25):
