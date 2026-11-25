@@ -130,7 +130,7 @@ def test_no_country_gets_general_welcome():
 
 
 def test_countries_without_own_msg_get_one_general_welcome():
-    assert dms(US, GERMANY) == [main.GENERAL_DM.format(user="pat")]
+    assert dms(UK, GERMANY) == [main.GENERAL_DM.format(user="pat")]
 
 
 def test_uk_gets_general_welcome():
@@ -149,12 +149,23 @@ def test_france_dm_sent_whatever_order_alongside_uk():
     assert dms(UK, france) == dms(france, UK) == dms(france)
 
 
+def test_us_gets_general_welcome_then_people_for_a_pause_dm():
+    general, us_dm = dms(US)
+    assert general == main.GENERAL_DM.format(user="pat")
+    assert us_dm.startswith("Welcome to PauseAI in US 🇺🇸:\n\nOur US partner organization, People for a Pause,")
+    assert "(https://peopleforapause.org/join)" in us_dm
+
+
+def test_us_still_pings_its_greeters():
+    assert ping(US, role(member_ids=[BOB, NEWBIE]), [role(member_ids=[BOB]), None])[1] == [BOB]
+
+
 def test_general_welcome_then_one_dm_per_country_with_own_msg():
     a = {"name": "A", "flag": "🇦🇦", "msg": "hi {user} from A"}
     b = {"name": "B", "msg": "hi {user} from B"}
-    assert dms(a, US, b) == [main.GENERAL_DM.format(user="pat"),
-                             "Welcome to PauseAI in A 🇦🇦:\n\nhi pat from A",
-                             "Welcome to PauseAI in B:\n\nhi pat from B"]
+    assert dms(a, GERMANY, b) == [main.GENERAL_DM.format(user="pat"),
+                                  "Welcome to PauseAI in A 🇦🇦:\n\nhi pat from A",
+                                  "Welcome to PauseAI in B:\n\nhi pat from B"]
 
 
 def test_general_welcome_asks_to_join_once_without_microcommit():

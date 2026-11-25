@@ -86,11 +86,15 @@ C'est là-bas que ça se passe pour agir en France. Tu peux bien sûr rester sur
 Welcome {user}! PauseAI France is run by Pause IA, which has its own Discord server: https://discord.gg/vyXGd7AeGc
 That's the place to get involved in France. You're still very welcome here too!"""
 
+US_DM = """Our US partner organization, People for a Pause, runs local groups and protests. Join them to get involved in the US: [peopleforapause.org/join](https://peopleforapause.org/join)
+You're still very welcome here too!"""
+
 # Unified definition for Countries (MailerSend Emails + YAGPDB Onboarder Pings)
 # Every country pings its Chapter Greeters, or failing that its National Leaders (see onboarding.py)
 COUNTRY_DATA = {
     1188719374941560925: {"name": "UK", "flag": "🇬🇧", "msg": "", "email": None},
-    1188717849980702781: {"name": "US", "flag": "🇺🇸", "msg": "", "email": None},
+    # New US members also get a DM pointing to People for a Pause, PauseAI's US partner organization
+    1188717849980702781: {"name": "US", "flag": "🇺🇸", "msg": US_DM, "email": None},
     # France is run by Pause IA on its own Discord, so new members are pointed there instead of pinging anyone
     1188719426552479824: {"name": "France", "flag": "🇫🇷", "msg": FRANCE_DM, "noPing": True, "email": None},
     1188719399117541396: {"name": "Germany", "flag": "🇩🇪", "msg": "", "email": "germany@pauseai.info"},
