@@ -18,16 +18,12 @@ That's the place to get involved in France. You're still very welcome here too!"
 # - "name": what posts and DMs call the country, when not the role name
 # - "msg": the country's own welcome DM, sent after the general one ({user} is the member's name)
 # - "noPing": post nothing in #onboarding-pipeline for it
-# - "email": a chapter address that MailerSend emails when someone gets the role
 # - "flag": the flag emoji, when the ISO code has none ("" for no flag)
 OVERRIDES = {
     "United Kingdom": {"name": "UK"},
     "United States": {"name": "US"},
     # France is run by Pause IA on its own Discord, so new members are pointed there instead of pinging anyone
     "France": {"msg": FRANCE_DM, "noPing": True},
-    "Germany": {"email": "germany@pauseai.info"},
-    "Canada": {"email": "canada@pauseai.info"},
-    "India": {"email": "india@pauseai.info"},
     # XK is a user-assigned code, so there's no flag emoji for it
     "Kosovo": {"flag": ""},
 }
@@ -41,8 +37,8 @@ def flag(iso):
 
 
 def info_for_name(role_name):
-    """What onboarding needs for a country role with this name ({"name", "flag", "msg", and "noPing"
-    and "email" if set}), or None if the name isn't a country."""
+    """What onboarding needs for a country role with this name ({"name", "flag", "msg", and
+    "noPing" if set}), or None if the name isn't a country."""
     iso = ISO_CODES.get(role_name)
     if iso is None:
         return None
@@ -56,7 +52,7 @@ def info(role):
 
 def infos(roles):
     """(role, info) for each country role among roles, in order. Only the first role with a given
-    name counts, so a duplicate role never doubles a ping, email or DM."""
+    name counts, so a duplicate role never doubles a ping or DM."""
     seen, result = set(), []
     for role in roles:
         i = info(role)
