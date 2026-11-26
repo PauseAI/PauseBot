@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 from types import SimpleNamespace as NS
+import countries
 import main
 import onboarding
 
@@ -68,7 +69,10 @@ def test_greeter_tier_is_tried_first():
 
 
 NOW = datetime.datetime(2026, 11, 14, 12, 0, tzinfo=datetime.UTC)
-FRANCE_ID = 1188719426552479824
+
+
+FRANCE = countries.info_for_name("France")
+ALL_COUNTRIES = [countries.info_for_name(name) for name in countries.ISO_CODES]
 
 
 def ping(info, country, tiers):
@@ -87,7 +91,7 @@ def test_ping_routes_to_greeters_then_national_leaders():
 
 
 def test_ping_with_nobody_by_role_posts_nobody_to_ping():
-    for info in ({"name": "UK"}, main.COUNTRY_DATA[1188719374941560925]):
+    for info in ({"name": "UK"}, countries.info_for_name("United Kingdom")):
         msg, ids = ping(info, role(member_ids=[NEWBIE]), [None, None])
         assert ids == []
         assert "no Chapter Greeter or National Leader for UK" in msg
@@ -96,7 +100,7 @@ def test_ping_with_nobody_by_role_posts_nobody_to_ping():
 
 def test_no_country_has_a_static_onboarder_list():
     assert not any("onboarders" in info or "beforeRoleRouting" in info
-                   for info in main.COUNTRY_DATA.values())
+                   for info in ALL_COUNTRIES)
 
 
 def test_no_ping_country_posts_nothing():
@@ -108,7 +112,7 @@ def test_no_ping_country_posts_nothing():
 
 
 def test_france_posts_nothing_and_sends_bilingual_dm():
-    france = main.COUNTRY_DATA[FRANCE_ID]
+    france = FRANCE
     country = role(member_ids=[BOB, NEWBIE])
     assert ping(france, country, [role(member_ids=[BOB]), None]) == (None, [])
     dm = france["msg"].format(user="pat")
@@ -117,25 +121,21 @@ def test_france_posts_nothing_and_sends_bilingual_dm():
 
 
 
-def test_india_japan_and_philippines_get_onboarding():
-    india = main.COUNTRY_DATA[1188720152716529694]
-    assert india["name"] == "India"
-    # MailerSend notifies the chapter's group address, as for Germany and Canada
-    assert india["email"] == "india@pauseai.info"
-    msg, ids = ping(india, role(member_ids=[BOB, NEWBIE]), [None, role(member_ids=[BOB])])
+def test_any_country_in_the_table_gets_onboarding():
+    # Portugal was never hard-coded: its role's name being in the table is enough
+    portugal = countries.info_for_name("Portugal")
+    assert portugal == {"name": "Portugal", "flag": "🇵🇹", "msg": ""}
+    msg, ids = ping(portugal, role(member_ids=[BOB, NEWBIE]), [None, role(member_ids=[BOB])])
     assert ids == [BOB]
-    assert msg == "<@2> : <@99> has joined from India!"
-    # No greeter or lead yet: the post says so, pings nobody, and no email is sent
-    for role_id, name in ((1188719775216566323, "Japan"), (1188720277585145867, "Philippines")):
-        info = main.COUNTRY_DATA[role_id]
-        assert info["name"] == name and info["email"] is None
-        msg, ids = ping(info, role(member_ids=[NEWBIE]), [None, None])
-        assert ids == []
-        assert f"no Chapter Greeter or National Leader for {name}" in msg
+    assert msg == "<@2> : <@99> has joined from Portugal!"
+    msg, ids = ping(portugal, role(member_ids=[NEWBIE]), [None, None])
+    assert ids == []
+    assert "no Chapter Greeter or National Leader for Portugal" in msg
 
-UK = main.COUNTRY_DATA[1188719374941560925]
-US = main.COUNTRY_DATA[1188717849980702781]
-GERMANY = main.COUNTRY_DATA[1188719399117541396]
+
+UK = countries.info_for_name("United Kingdom")
+US = countries.info_for_name("United States")
+GERMANY = countries.info_for_name("Germany")
 
 
 def dms(*infos, skip=None):
@@ -152,17 +152,17 @@ def test_countries_without_own_msg_get_one_general_welcome():
 
 def test_uk_gets_general_welcome():
     assert dms(UK) == [main.GENERAL_DM.format(user="pat")]
-    assert not any("noDM" in info for info in main.COUNTRY_DATA.values())
+    assert not any("noDM" in info for info in ALL_COUNTRIES)
 
 
 def test_france_gets_general_welcome_then_its_own_dm():
-    general, france_dm = dms(main.COUNTRY_DATA[FRANCE_ID])
+    general, france_dm = dms(FRANCE)
     assert general == main.GENERAL_DM.format(user="pat")
     assert france_dm.startswith("Welcome to PauseAI in France 🇫🇷:\n\nBienvenue pat")
 
 
 def test_france_dm_sent_whatever_order_alongside_uk():
-    france = main.COUNTRY_DATA[FRANCE_ID]
+    france = FRANCE
     assert dms(UK, france) == dms(france, UK) == dms(france)
 
 
@@ -179,13 +179,9 @@ def test_general_welcome_asks_to_join_once_without_microcommit():
     assert "MicroCommit" not in main.GENERAL_DM
 
 
-def test_every_country_has_a_flag():
-    assert all(info.get("flag") for info in main.COUNTRY_DATA.values())
-
-
 def test_every_dm_fits_in_one_discord_message():
     longest_name = "x" * 32  # Discord usernames are at most 32 characters
-    for info in [None, *main.COUNTRY_DATA.values()]:
+    for info in [None, *ALL_COUNTRIES]:
         for dm in onboarding.welcome_dms([info] if info else [], main.GENERAL_DM, longest_name):
             assert len(dm) <= onboarding.DISCORD_MESSAGE_LIMIT
 
@@ -231,11 +227,11 @@ def test_member_who_has_not_joined_keeps_join_paragraph():
 
 
 def test_skipping_join_paragraph_leaves_country_dms_alone():
-    france = main.COUNTRY_DATA[FRANCE_ID]
+    france = FRANCE
     assert dms(france, skip=main.GENERAL_DM_JOIN_PARAGRAPH)[1:] == dms(france)[1:]
 
 
-SPAIN = main.COUNTRY_DATA[1188720344882753566]
+SPAIN = countries.info_for_name("Spain")
 
 
 def own_ping(info, country, tiers, member_id, added=()):
@@ -265,7 +261,7 @@ def test_national_leader_picking_up_country_role_pings_nobody():
 
 
 def test_onboarder_picking_up_no_ping_country_posts_nothing():
-    france = main.COUNTRY_DATA[FRANCE_ID]
+    france = FRANCE
     country = role(member_ids=[DAVE])
     assert own_ping(france, country, [role(member_ids=[DAVE]), None], DAVE) == (None, [])
 
@@ -309,7 +305,7 @@ def test_both_tier_roles_at_once_get_a_line_each():
 
 
 def test_tier_announcement_leaves_out_no_ping_countries():
-    france = main.COUNTRY_DATA[FRANCE_ID]
+    france = FRANCE
     assert tier_msg(["Chapter Greeter"], france, SPAIN) == "<@dani> has become a Chapter Greeter for Spain"
     assert tier_msg(["Chapter Greeter"], france) is None
 
@@ -341,11 +337,20 @@ def test_existing_member_adding_country_pings_greeters():
         "<@2> : <@99> (member since Mar 2025) added Spain", [BOB])
 
 
-def test_existing_member_adding_country_with_nobody_to_ping():
-    msg, ids = existing_ping({"name": "Israel"}, role(member_ids=[NEWBIE]), [None, None], NOW)
-    assert ids == []
-    assert msg == ("<@99> (member since Mar 2025) added Israel, but there's no Chapter Greeter "
-                   "or National Leader for Israel to ping.")
+def test_existing_member_adding_country_with_nobody_to_ping_posts_nothing():
+    # Only new joiners get the "nobody to ping" post, so countries without onboarders stay quiet
+    assert existing_ping({"name": "Israel"}, role(member_ids=[NEWBIE]), [None, None], NOW) == (None, [])
+
+
+def test_restored_country_with_nobody_to_ping_posts_nothing():
+    assert onboarding.onboarding_ping({"name": "Israel"}, role(member_ids=[NEWBIE]), [None, None], NEWBIE,
+                                      "<@99>", now=NOW, restored=True) == (None, [])
+
+
+def test_restored_country_with_onboarders_still_pings_them():
+    country = role(member_ids=[BOB, NEWBIE])
+    assert onboarding.onboarding_ping({"name": "Israel"}, country, [role(member_ids=[BOB]), None], NEWBIE,
+                                      "<@99>", now=NOW, restored=True) == ("<@2> : <@99> has joined from Israel!", [BOB])
 
 
 def test_recent_joiner_still_gets_joined_message():
@@ -357,7 +362,7 @@ def test_recent_joiner_still_gets_joined_message():
 
 
 def test_existing_member_adding_no_ping_country_posts_nothing():
-    france = main.COUNTRY_DATA[FRANCE_ID]
+    france = FRANCE
     assert existing_ping(france, role(member_ids=[BOB, NEWBIE]), [role(member_ids=[BOB]), None], NOW) == (None, [])
 
 
@@ -373,7 +378,7 @@ def added_dms(*infos, joined_at=LONG_AGO, tiers=(None, None), member_id=NEWBIE, 
 
 
 def test_existing_member_gets_only_country_dm():
-    france = main.COUNTRY_DATA[FRANCE_ID]
+    france = FRANCE
     dm, = added_dms(france, UK)
     assert dm.startswith("Welcome to PauseAI in France 🇫🇷:\n\n")
     assert "Bienvenue pat" in dm
@@ -386,12 +391,12 @@ def test_existing_member_adding_country_without_msg_gets_no_dm():
 
 def test_new_member_gets_no_dm_on_role_gain():
     # Their welcome comes from the delayed welcome DM
-    assert added_dms(main.COUNTRY_DATA[FRANCE_ID], joined_at=NOW - datetime.timedelta(minutes=5)) == []
-    assert added_dms(main.COUNTRY_DATA[FRANCE_ID], joined_at=None) == []
+    assert added_dms(FRANCE, joined_at=NOW - datetime.timedelta(minutes=5)) == []
+    assert added_dms(FRANCE, joined_at=None) == []
 
 
 def test_onboarder_adding_own_country_gets_no_dm():
-    assert added_dms(main.COUNTRY_DATA[FRANCE_ID], tiers=(role(member_ids=[NEWBIE]), None)) == []
+    assert added_dms(FRANCE, tiers=(role(member_ids=[NEWBIE]), None)) == []
 
 
 async def test_member_awaiting_welcome_counts_as_new_until_it_has_run(monkeypatch):

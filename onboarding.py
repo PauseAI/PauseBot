@@ -74,8 +74,8 @@ def onboarder_title(tier_roles, member_id):
 
 
 def onboarding_ping(info, country_role, tier_roles, joining_member_id, member_mention, now=None,
-                    added_tier_names=(), joined_at=None):
-    """(message to post in #onboarding-pipeline, IDs it pings) for one country's COUNTRY_DATA entry.
+                    added_tier_names=(), joined_at=None, restored=False):
+    """(message to post in #onboarding-pipeline, IDs it pings) for one country's info (see countries.info).
 
     A country with "noPing" set posts nothing at all, not even the "nobody to ping" message,
     so the message is None.
@@ -88,6 +88,10 @@ def onboarding_ping(info, country_role, tier_roles, joining_member_id, member_me
     Otherwise the country's Chapter Greeters, or failing that its National Leaders, are pinged
     (see resolve_onboarders), with the same routing for a new member and for an existing one
     (see is_existing_member, from joined_at) adding a country: only the wording differs.
+
+    With nobody to ping, only a new member picking a country gets the "nobody to ping" post: an
+    existing member adding one, or a country role given back from saved roles (restored), posts
+    nothing, so the countries without onboarders don't fill the channel.
     """
     if info.get("noPing"):
         return None, []
@@ -99,18 +103,19 @@ def onboarding_ping(info, country_role, tier_roles, joining_member_id, member_me
     if title:
         return picked_up_message(member_mention, info["name"], title), []
     ids = resolve_onboarders(country_role, tier_roles, joining_member_id)
-    if is_existing_member(joined_at, now):
+    existing = is_existing_member(joined_at, now)
+    if not ids and (existing or restored):
+        return None, []
+    if existing:
         return added_country_message(ids, member_mention, info["name"], joined_at), ids
     return onboarding_message(ids, member_mention, info["name"]), ids
 
 
 def added_country_message(onboarder_ids, member_mention, country_name, joined_at):
-    """The post for an existing member (one who joined at joined_at) adding a country."""
-    member = f"{member_mention} (member since {joined_at.strftime('%b %Y')}) added {country_name}"
-    if onboarder_ids:
-        mentions = " ".join(f"<@{uid}>" for uid in onboarder_ids)
-        return f"{mentions} : {member}"
-    return f"{member}, but there's no Chapter Greeter or National Leader for {country_name} to ping."
+    """The post for an existing member (one who joined at joined_at) adding a country, pinging its
+    onboarders (an existing member adding a country nobody onboards gets no post)."""
+    mentions = " ".join(f"<@{uid}>" for uid in onboarder_ids)
+    return f"{mentions} : {member_mention} (member since {joined_at.strftime('%b %Y')}) added {country_name}"
 
 
 def picked_up_message(member_mention, country_name, title):
@@ -119,7 +124,7 @@ def picked_up_message(member_mention, country_name, title):
 
 def tier_role_message(added_tier_names, country_infos, member_mention):
     """The post for a member who just gained tier roles (names from TIER_ROLE_NAMES), given the
-    COUNTRY_DATA entries for every country role they hold: one line per tier role, naming those
+    infos (see countries.info) of every country role they hold: one line per tier role, naming those
     countries. noPing countries are left out, and None means nothing to post (no tier role
     gained, or no country left to name)."""
     names = [info["name"] for info in country_infos if not info.get("noPing")]
@@ -158,7 +163,7 @@ def has_joined(member):
 
 
 def welcome_dms(country_infos, general_msg, user, skip_paragraph=None):
-    """The welcome DMs to send a member who picked these countries (COUNTRY_DATA entries), in order.
+    """The welcome DMs to send a member who picked these countries (infos, see countries.info), in order.
 
     Always the general welcome first, then one DM per picked country that has its own "msg",
     each headed with that country's name and flag. skip_paragraph, if given, is left out of the
@@ -170,7 +175,7 @@ def welcome_dms(country_infos, general_msg, user, skip_paragraph=None):
 
 
 def country_dms(country_infos, user):
-    """One DM per country (COUNTRY_DATA entry) that has its own "msg", in order, each headed with
+    """One DM per country (info, see countries.info) that has its own "msg", in order, each headed with
     that country's name and flag. On its own, this is what an existing member adding a country
     is sent: no general welcome."""
     return [f"{country_dm_prefix(info)}\n\n{info['msg'].format(user=user)}"
@@ -178,7 +183,7 @@ def country_dms(country_infos, user):
 
 
 def added_country_dms(country_infos, tier_roles, member_id, user, joined_at, now=None):
-    """The DMs for a member who just gained these country roles (COUNTRY_DATA entries) outside
+    """The DMs for a member who just gained these country roles (infos, see countries.info) outside
     the delayed welcome: only an existing member (see is_existing_member) gets any, and then only
     the countries' own DMs (see country_dms), leaving out countries they're an onboarder for.
     New members get theirs from the delayed welcome instead."""

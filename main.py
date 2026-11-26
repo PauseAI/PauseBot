@@ -16,6 +16,7 @@ import onboarding
 import civicrm
 import members
 import country_finder
+import countries
 import modlog
 # Load environment variables from .env file
 load_dotenv()
@@ -79,39 +80,6 @@ Feel free to introduce yourself in the <#1101804381755686972> – it's always ni
 We also conduct welcome calls where you can meet others who are joining PauseAI, you can check them out [here](https://luma.com/PauseAI?tag=welcome).
  
 Lastly, you can find others near you who are organizing in communities: <#1171376873721298984>"""
-
-FRANCE_DM = """Bienvenue {user} ! PauseAI France est animé par Pause IA, qui a son propre serveur Discord : https://discord.gg/vyXGd7AeGc
-C'est là-bas que ça se passe pour agir en France. Tu peux bien sûr rester sur ce serveur aussi !
-
-Welcome {user}! PauseAI France is run by Pause IA, which has its own Discord server: https://discord.gg/vyXGd7AeGc
-That's the place to get involved in France. You're still very welcome here too!"""
-
-# Unified definition for Countries (MailerSend Emails + YAGPDB Onboarder Pings)
-# Every country pings its Chapter Greeters, or failing that its National Leaders (see onboarding.py)
-COUNTRY_DATA = {
-    1188719374941560925: {"name": "UK", "flag": "🇬🇧", "msg": "", "email": None},
-    1188717849980702781: {"name": "US", "flag": "🇺🇸", "msg": "", "email": None},
-    # France is run by Pause IA on its own Discord, so new members are pointed there instead of pinging anyone
-    1188719426552479824: {"name": "France", "flag": "🇫🇷", "msg": FRANCE_DM, "noPing": True, "email": None},
-    1188719399117541396: {"name": "Germany", "flag": "🇩🇪", "msg": "", "email": "germany@pauseai.info"},
-    1188719443954643035: {"name": "Netherlands", "flag": "🇳🇱", "msg": "", "email": None},
-    1188719729662234624: {"name": "Italy", "flag": "🇮🇹", "msg": "", "email": None},
-    1188720344882753566: {"name": "Spain", "flag": "🇪🇸", "msg": "", "email": None},
-    1250075465008549938: {"name": "Canada", "flag": "🇨🇦", "msg": "", "email": "canada@pauseai.info"},
-    1188719833555161089: {"name": "Nigeria", "flag": "🇳🇬", "msg": "", "email": None},
-    1188720325530243142: {"name": "Romania", "flag": "🇷🇴", "msg": "", "email": None},
-    1188719500439343135: {"name": "Australia", "flag": "🇦🇺", "msg": "", "email": None},
-    1188719860096712756: {"name": "Poland", "flag": "🇵🇱", "msg": "", "email": None},
-    1429216643459842129: {"name": "Serbia", "flag": "🇷🇸", "msg": "", "email": None},
-    1188719899401523330: {"name": "Sweden", "flag": "🇸🇪", "msg": "", "email": None},
-    1188719610384633918: {"name": "Czech", "flag": "🇨🇿", "msg": "", "email": None},
-    1256260218162122843: {"name": "Kenya", "flag": "🇰🇪", "msg": "", "email": None},
-    1188719747282518130: {"name": "Israel", "flag": "🇮🇱", "msg": "", "email": None},
-    1188719975796584479: {"name": "South Korea", "flag": "🇰🇷", "msg": "", "email": None},
-    1188720152716529694: {"name": "India", "flag": "🇮🇳", "msg": "", "email": "india@pauseai.info"},
-    1188719775216566323: {"name": "Japan", "flag": "🇯🇵", "msg": "", "email": None},
-    1188720277585145867: {"name": "Philippines", "flag": "🇵🇭", "msg": "", "email": None},
-}
 
 intents = discord.Intents.default()
 intents.members = True # Required for on_member_join!
@@ -282,6 +250,26 @@ def role_lists(roles):
     roles = [r for r in roles if not r.is_default()]
     return [r.id for r in roles], [r.name for r in roles]
 
+# Roles the bot is giving back from saved roles, as (member ID, role ID) -> when, so the
+# on_member_update they cause can tell a restore from a member picking a country
+restoring_roles = {}
+RESTORE_MARK_SECONDS = 300
+
+
+def mark_restoring(member_id, roles, now=None):
+    now = now or datetime.datetime.now(datetime.UTC)
+    for key, when in list(restoring_roles.items()):
+        if (now - when).total_seconds() > RESTORE_MARK_SECONDS:
+            del restoring_roles[key]
+    for role in roles:
+        restoring_roles[(member_id, role.id)] = now
+
+
+def take_restored(member_id, role_id):
+    """Whether this role was just given back to this member from their saved roles (forgotten once asked)."""
+    return restoring_roles.pop((member_id, role_id), None) is not None
+
+
 async def sync_member_record(member, onboarding_notification=False, restore_roles=False):
     """Saves the member's record. With restore_roles (only when they've just joined), first gives back
     any saved roles they don't have, such as after leaving and rejoining, that are safe to grant.
@@ -293,11 +281,14 @@ async def sync_member_record(member, onboarding_notification=False, restore_role
         to_restore = [r for r in members.roles_to_restore(member.guild, *saved)
                       if r not in roles and is_role_safe_to_grant(r)]
         if to_restore:
+            mark_restoring(member.id, to_restore)
             try:
                 await member.add_roles(*to_restore)
                 print(f"Restored {len(to_restore)} roles for returning user {member.name}.")
                 roles += to_restore
             except Exception as e:
+                for r in to_restore:
+                    take_restored(member.id, r.id)
                 print(f"Error restoring roles for {member.name}: {e}")
 
     role_ids, role_names = role_lists(roles)
@@ -450,7 +441,7 @@ async def _send_delayed_welcome_dm(member):
         return
 
     # Every country role they picked during the 3 minutes, each with its own DM if it has one
-    country_infos = [COUNTRY_DATA[role.id] for role in member.roles if role.id in COUNTRY_DATA]
+    country_infos = [info for _, info in countries.infos(member.roles)]
     # Members who've already joined don't need asking to
     skip = GENERAL_DM_JOIN_PARAGRAPH if onboarding.has_joined(member) else None
     for dm in onboarding.welcome_dms(country_infos, GENERAL_DM, member.name, skip_paragraph=skip):
@@ -496,10 +487,11 @@ async def on_member_update(before, after):
 
     # Check if any new roles were added
     new_roles = [role for role in after.roles if role not in before.roles]
-    added_country_roles = [role for role in new_roles if role.id in COUNTRY_DATA]
+    # Any role named after a country in jobs/country_regions_table.py (see countries.py)
+    added_countries = countries.infos(new_roles)
     added_tier_names = [role.name for role in new_roles if role.name in onboarding.TIER_ROLE_NAMES]
 
-    if not added_country_roles and not added_tier_names:
+    if not added_countries and not added_tier_names:
         return
 
     channel = bot.get_channel(int(ONBOARDING_PIPELINE_CHANNEL_ID)) if ONBOARDING_PIPELINE_CHANNEL_ID else None
@@ -513,7 +505,7 @@ async def on_member_update(before, after):
     # if the announcement went out)
     announced_tier_names = []
     if added_tier_names and channel:
-        held_countries = [COUNTRY_DATA[r.id] for r in after.roles if r.id in COUNTRY_DATA]
+        held_countries = [info for _, info in countries.infos(after.roles)]
         tier_msg = onboarding.tier_role_message(added_tier_names, held_countries, after.mention)
         if tier_msg:
             try:
@@ -522,7 +514,7 @@ async def on_member_update(before, after):
             except discord.HTTPException as e:
                 print(f"Error posting tier role post for {after.name}: {e}")
 
-    if not added_country_roles:
+    if not added_countries:
         return
 
     # Will track if we need to set the notification flag
@@ -531,26 +523,26 @@ async def on_member_update(before, after):
     # By name, so test servers' own roles work and a role created after startup is found
     tier_roles = [discord.utils.get(after.guild.roles, name=name) for name in onboarding.TIER_ROLE_NAMES]
 
-    for role in added_country_roles:
-        info = COUNTRY_DATA[role.id]
-        
-        # 1. Ping Staff in Onboarding Channel (skipped for noPing countries)
+    for role, info in added_countries:
+        # Ping the onboarders in #onboarding-pipeline (skipped for noPing countries)
         if channel:
             ping_msg, onboarder_ids = onboarding.onboarding_ping(
                 info, role, tier_roles, after.id, after.mention, now=now,
-                added_tier_names=announced_tier_names, joined_at=joined_at)
+                added_tier_names=announced_tier_names, joined_at=joined_at,
+                restored=take_restored(after.id, role.id))
             if ping_msg:
-                # A failed post shouldn't stop the email and the record update below
+                # A failed post shouldn't stop the other countries' posts, the email (if any) and the record update below
                 try:
                     await channel.send(ping_msg)
                     if onboarder_ids:
                         onboarding_notification = True
                 except discord.HTTPException as e:
                     print(f"Error posting onboarding ping for {after.name} ({info['name']}): {e}")
-            
-        # 2. Send MailerSend Email (if email exists)
+
+        # Email the chapter's address through MailerSend, for countries with an "email" (see countries.py)
+        # Not from a developer-mode bot: test servers' roles have the same names, but the addresses are real
         target_email = info.get("email")
-        if target_email:
+        if target_email and not DEVELOPER_MODE:
             url = "https://api.mailersend.com/v1/email"
             headers = {
                 "Authorization": f"Bearer {MAILERSEND_API_KEY}",
@@ -576,7 +568,7 @@ async def on_member_update(before, after):
 
     # An existing member adding a country gets that country's own welcome now (new members get
     # theirs, with the general welcome, from send_delayed_welcome_dm)
-    added_infos = [COUNTRY_DATA[role.id] for role in added_country_roles]
+    added_infos = [info for _, info in added_countries]
     for dm in onboarding.added_country_dms(added_infos, tier_roles, after.id, after.name, joined_at, now):
         try:
             await after.send(dm)
