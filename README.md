@@ -76,7 +76,7 @@ The bot can already send in the other- channels. To pin, it needs **Pin Messages
 
 5. **Configure Roles and Channels (in `main.py`):**
    - Update `ONBOARDING_PIPELINE_CHANNEL_ID` with the channel ID where the bot should log its actions.
-   - Update the `COUNTRY_ROLES` dictionary with the Discord Role IDs.
+   - Country roles are found by name from `jobs/country_regions_table.py`; the few exceptions are in `countries.py`.
 
 ## Running the Bot
 
@@ -118,8 +118,8 @@ The bot and Postgres are in US West (California). A move to EU West is planned (
 - **Region and replicas**: US West (California), 1 replica, not serverless. Run one replica only: two would both answer Discord events and both run the scheduled jobs. Teardown (deploy overlap and draining) is off.
 - **Volumes**: none. The bot keeps nothing on disk; its data is in Postgres.
 - **Scheduled work**: none on Railway (no cron). The daily server snapshot and prune is a `discord.ext.tasks` loop inside the bot (`daily_snapshot_and_prune`). It runs at startup and then every 24 hours, so its time of day is set by the last restart (around 18:48 UTC as of November 2026). The same loop deletes the bot's log channel posts whose oldest quoted message was sent over 30 days ago. The startup run skips a server already snapshotted in the last 20 hours, so a restart within 20 hours of the last snapshot can leave a gap of up to about 44 hours. The CiviCRM link sweep is another in-process loop, hourly.
-- **Variables**: `DATABASE_URL` is a reference, `${{Postgres.DATABASE_URL}}`. Set as values: `DISCORD_TOKEN`, `MAILERSEND_API_KEY`, `PORT` (8080), `WEBHOOK_SECRET`, `STATS_SECRET`, `CIVICRM_URL` and `CIVICRM_API_KEY` (without either of the last two, the bot starts but quietly never links members to CiviCRM). Also set, since this list was first read: `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`, `MESSAGE_LOG_CHANNEL_ID` and `MESSAGE_LOG_IGNORE_IDS` (checked 24 November 2026). `DEVELOPER_MODE` is not set, which means off; leave it unset in production.
-- `MAILERSEND_API_KEY` is still set, but the bot no longer reads it, so it can be deleted.
+- **Variables**: `DATABASE_URL` is a reference, `${{Postgres.DATABASE_URL}}`. Set as values: `DISCORD_TOKEN`, `PORT` (8080), `WEBHOOK_SECRET`, `STATS_SECRET`, `CIVICRM_URL` and `CIVICRM_API_KEY` (without either of the last two, the bot starts but quietly never links members to CiviCRM). Also set, since this list was first read: `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`, `MESSAGE_LOG_CHANNEL_ID` and `MESSAGE_LOG_IGNORE_IDS` (checked 24 November 2026). `DEVELOPER_MODE` is not set, which means off; leave it unset in production.
+- `MAILERSEND_API_KEY` is also set, but the bot no longer reads it, so it can be deleted.
 
 **Postgres**: US West (California), with the volume `postgres-volume`.
 

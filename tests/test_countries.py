@@ -175,13 +175,12 @@ async def test_france_posts_nothing_and_an_existing_member_gets_its_dm(bot):
 
 
 def test_no_country_has_a_chapter_email():
-    # The MailerSend chapter emails are gone: the #onboarding-pipeline ping covers them
+    # The MailerSend chapter emails are gone: the #onboarding-pipeline post covers them
     assert [name for name in countries.ISO_CODES if "email" in countries.info_for_name(name)] == []
 
 
 @pytest.mark.parametrize("name", ("Germany", "Canada", "India"))
-async def test_germany_canada_and_india_ping_but_send_no_email(bot, monkeypatch, name):
-    monkeypatch.setattr(main, "MAILERSEND_API_KEY", "key", raising=False)
+async def test_germany_canada_and_india_ping_but_send_no_email(bot, name):
     await gain(name, greeters=[7])
     assert bot.http.posts == []
     assert bot.channel.posts == [f"<@7> : <@99> has joined from {name}!"]

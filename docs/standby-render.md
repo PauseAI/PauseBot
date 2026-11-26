@@ -31,7 +31,7 @@ The rehearsal proves the standby works: that the Blueprint builds and starts, an
    | `DEVELOPER_MODE` | `true` |
    | everything else | empty |
 
-   With no token, `main.py` prints `Error: DISCORD_TOKEN, ... is not set`, exits without opening a port, and Render restarts it until the deploy fails its port or health check. That's expected, and it means the bot creates no tables before the restore.
+   With no token, `main.py` prints `Error: DISCORD_TOKEN or DATABASE_URL is not set in the environment.`, exits without opening a port, and Render restarts it until the deploy fails its port or health check. That's expected, and it means the bot creates no tables before the restore.
 
 2. **Restore the newest dump.**
    1. In the Dashboard, open `pausebot-db` > Networking and add your own IP to the allow list. Copy the **External Database URL** from Connect and keep it in a variable for the next steps (it holds the password, so start the line with a space to keep it out of shell history, if your shell is set up for that): `export RENDER_EXTERNAL_URL='<External Database URL>'`.
