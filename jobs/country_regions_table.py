@@ -1,8 +1,10 @@
-"""Which region each country role belongs to, for jobs/country_regions.py.
+"""Which region each country role belongs to, for jobs/country_regions.py, the country finder
+and onboarding (countries.py).
 
 Keys are country role names exactly as they appear in the server (after the script renames
-'Dominian Republic'). Values are the ISO 3166 alpha-2 code, used only for the flag emoji on a
-new onboarding option. A role not listed here isn't treated as a country (e.g. 'California').
+'Dominian Republic'). Values are the ISO 3166 alpha-2 code, used for the country's flag emoji.
+A role not listed here isn't treated as a country (e.g. 'California'), so adding a country here
+is all a new chapter's role needs to get onboarding pings and welcome DMs.
 
 Regions as agreed on 21-22 Nov 2026:
 - Europe includes Russia and the Caucasus (Armenia, Azerbaijan, Georgia)

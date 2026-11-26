@@ -22,12 +22,13 @@ import re
 import time
 import discord
 from jobs.country_regions_table import REGIONS, COUNTRIES, ENDONYMS
+from countries import flag
 
 PREFIX = "country_finder"
 MAX_OPTIONS = 25  # Discord's limit for one select menu
 REGION_EMOJI = {"Europe": "🌍", "Americas": "🌎", "Africa": "🌍", "Middle East": "🌍", "Asia-Pacific": "🌏"}
 
-# Each country added can ping its greeters and email its coordinator, so a member is held back after
+# Each country added can ping its greeters, so a member is held back after
 # this many countries added or removed in this many seconds (a dropdown can tick up to 25 at once)
 CHANGE_LIMIT = 10
 CHANGE_WINDOW = 600
@@ -39,10 +40,6 @@ POST_TEXT = ("**Not listed in onboarding?** Pick your country here to get its ro
 
 INTRO = ("**Where are you?** Pick your country to get its role and its channel. Press your region, then "
          "tick your country. You can pick more than one, and change them any time.")
-
-
-def flag(iso):
-    return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in iso)
 
 
 def slug(name):
