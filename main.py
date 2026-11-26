@@ -507,7 +507,7 @@ async def on_member_update(before, after):
                 info, role, tier_roles, after.id, after.mention, now=now,
                 added_tier_names=announced_tier_names, joined_at=joined_at)
             if ping_msg:
-                # A failed post shouldn't stop the email and the record update below
+                # A failed post shouldn't stop the other countries' posts, the email (if any) and the record update below
                 try:
                     await channel.send(ping_msg)
                     if onboarder_ids:

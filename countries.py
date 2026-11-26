@@ -2,7 +2,9 @@
 
 Any role whose name is a country in jobs/country_regions_table.py is a country role, so a new
 chapter's role gets onboarding (the #onboarding-pipeline ping and the welcome DMs) as soon as it
-exists, with no code change. Roles not in that table (e.g. 'California') are ignored.
+exists, with no code change. Roles not in that table (e.g. 'California') are ignored. Matching is
+by exact name, so renaming a country role away from its table name turns its onboarding off, and
+a non-country role given a country's name (a US state called 'Georgia') would count as that country.
 """
 from jobs.country_regions_table import COUNTRIES
 

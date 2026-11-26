@@ -28,7 +28,7 @@ PREFIX = "country_finder"
 MAX_OPTIONS = 25  # Discord's limit for one select menu
 REGION_EMOJI = {"Europe": "🌍", "Americas": "🌎", "Africa": "🌍", "Middle East": "🌍", "Asia-Pacific": "🌏"}
 
-# Each country added can ping its greeters and email its coordinator, so a member is held back after
+# Each country added can ping its greeters (and email a few chapters), so a member is held back after
 # this many countries added or removed in this many seconds (a dropdown can tick up to 25 at once)
 CHANGE_LIMIT = 10
 CHANGE_WINDOW = 600
