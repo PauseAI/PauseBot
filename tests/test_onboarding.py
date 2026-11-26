@@ -337,11 +337,20 @@ def test_existing_member_adding_country_pings_greeters():
         "<@2> : <@99> (member since Mar 2025) added Spain", [BOB])
 
 
-def test_existing_member_adding_country_with_nobody_to_ping():
-    msg, ids = existing_ping({"name": "Israel"}, role(member_ids=[NEWBIE]), [None, None], NOW)
-    assert ids == []
-    assert msg == ("<@99> (member since Mar 2025) added Israel, but there's no Chapter Greeter "
-                   "or National Leader for Israel to ping.")
+def test_existing_member_adding_country_with_nobody_to_ping_posts_nothing():
+    # Only new joiners get the "nobody to ping" post, so countries without onboarders stay quiet
+    assert existing_ping({"name": "Israel"}, role(member_ids=[NEWBIE]), [None, None], NOW) == (None, [])
+
+
+def test_restored_country_with_nobody_to_ping_posts_nothing():
+    assert onboarding.onboarding_ping({"name": "Israel"}, role(member_ids=[NEWBIE]), [None, None], NEWBIE,
+                                      "<@99>", now=NOW, restored=True) == (None, [])
+
+
+def test_restored_country_with_onboarders_still_pings_them():
+    country = role(member_ids=[BOB, NEWBIE])
+    assert onboarding.onboarding_ping({"name": "Israel"}, country, [role(member_ids=[BOB]), None], NEWBIE,
+                                      "<@99>", now=NOW, restored=True) == ("<@2> : <@99> has joined from Israel!", [BOB])
 
 
 def test_recent_joiner_still_gets_joined_message():

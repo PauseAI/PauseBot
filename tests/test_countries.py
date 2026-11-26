@@ -1,9 +1,13 @@
 import datetime
 import itertools
 from types import SimpleNamespace as NS
+import discord
 import pytest
 import countries
+import db
 import main
+
+REAL_SYNC = main.sync_member_record
 
 # What the hard-coded COUNTRY_DATA said for each country before countries became automatic, keyed by
 # the role's name in the server. Posts and DMs must call each one the same, with the same flag.
@@ -65,13 +69,23 @@ NOW = datetime.datetime.now(datetime.UTC)
 class Role:
     def __init__(self, name, members=()):
         self.id, self.name, self.members = next(_ids), name, list(members)
+        self.permissions = discord.Permissions()
+
+    def is_default(self):
+        return False
+
+    def is_bot_managed(self):
+        return False
 
 
 class Member:
     def __init__(self, guild, roles, joined_at):
         self.id, self.name, self.mention = 99, "pat", "<@99>"
         self.guild, self.roles, self.joined_at, self.pending = guild, list(roles), joined_at, False
-        self.dms = []
+        self.nick, self.global_name, self.dms = None, "pat", []
+
+    async def add_roles(self, *roles, reason=None):
+        self.roles += roles
 
     async def send(self, content):
         self.dms.append(content)
@@ -215,3 +229,37 @@ async def test_the_delayed_welcome_includes_a_never_hard_coded_countrys_dm(monke
 
 async def _noop():
     return None
+
+
+async def test_an_existing_member_adding_a_country_with_nobody_to_ping_posts_nothing(bot):
+    await gain("Portugal", joined_at=NOW - datetime.timedelta(days=30))
+    assert bot.channel.posts == []
+
+
+async def test_restored_countries_never_post_nobody_to_ping(bot, pool, monkeypatch):
+    # A member leaves and rejoins: the join-time sync gives back their saved countries, which
+    # fires on_member_update like a pick. Countries with onboarders still ping; the rest post nothing.
+    monkeypatch.setattr(main, "db_pool", pool)
+    portugal, kenya = Role("Portugal", [NS(id=99)]), Role("Kenya", [NS(id=7), NS(id=99)])
+    greeter = Role("Chapter Greeter", [NS(id=7)])
+    guild = NS(id=main.PAUSEAI_SERVER_ID, roles=[portugal, kenya, greeter])
+    guild.get_role = lambda role_id: next((r for r in guild.roles if r.id == role_id), None)
+    member = Member(guild, [portugal, kenya], NOW - datetime.timedelta(days=400))
+    await REAL_SYNC(member)  # their saved roles
+    rejoined = Member(guild, [], NOW)
+    await REAL_SYNC(rejoined, restore_roles=True)
+    assert rejoined.roles == [portugal, kenya]
+    await main.on_member_update(Member(guild, [], NOW), rejoined)
+    assert bot.channel.posts == ["<@7> : <@99> has joined from Kenya!"]
+    # Picking Portugal again later is a real pick, so it says nobody's there to ping
+    await main.on_member_update(Member(guild, [], NOW), Member(guild, [portugal], NOW))
+    assert bot.channel.posts[1:] == ["<@99> has joined from Portugal, but there's no Chapter Greeter "
+                                     "or National Leader for Portugal to ping."]
+
+
+def test_restore_marks_expire():
+    then = NOW - datetime.timedelta(seconds=main.RESTORE_MARK_SECONDS + 1)
+    main.mark_restoring(1, [NS(id=10)], now=then)
+    main.mark_restoring(2, [NS(id=20)], now=NOW)
+    assert not main.take_restored(1, 10)
+    assert main.take_restored(2, 20) and not main.take_restored(2, 20)

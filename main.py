@@ -250,6 +250,26 @@ def role_lists(roles):
     roles = [r for r in roles if not r.is_default()]
     return [r.id for r in roles], [r.name for r in roles]
 
+# Roles the bot is giving back from saved roles, as (member ID, role ID) -> when, so the
+# on_member_update they cause can tell a restore from a member picking a country
+restoring_roles = {}
+RESTORE_MARK_SECONDS = 300
+
+
+def mark_restoring(member_id, roles, now=None):
+    now = now or datetime.datetime.now(datetime.UTC)
+    for key, when in list(restoring_roles.items()):
+        if (now - when).total_seconds() > RESTORE_MARK_SECONDS:
+            del restoring_roles[key]
+    for role in roles:
+        restoring_roles[(member_id, role.id)] = now
+
+
+def take_restored(member_id, role_id):
+    """Whether this role was just given back to this member from their saved roles (forgotten once asked)."""
+    return restoring_roles.pop((member_id, role_id), None) is not None
+
+
 async def sync_member_record(member, onboarding_notification=False, restore_roles=False):
     """Saves the member's record. With restore_roles (only when they've just joined), first gives back
     any saved roles they don't have, such as after leaving and rejoining, that are safe to grant.
@@ -261,11 +281,14 @@ async def sync_member_record(member, onboarding_notification=False, restore_role
         to_restore = [r for r in members.roles_to_restore(member.guild, *saved)
                       if r not in roles and is_role_safe_to_grant(r)]
         if to_restore:
+            mark_restoring(member.id, to_restore)
             try:
                 await member.add_roles(*to_restore)
                 print(f"Restored {len(to_restore)} roles for returning user {member.name}.")
                 roles += to_restore
             except Exception as e:
+                for r in to_restore:
+                    take_restored(member.id, r.id)
                 print(f"Error restoring roles for {member.name}: {e}")
 
     role_ids, role_names = role_lists(roles)
@@ -505,7 +528,8 @@ async def on_member_update(before, after):
         if channel:
             ping_msg, onboarder_ids = onboarding.onboarding_ping(
                 info, role, tier_roles, after.id, after.mention, now=now,
-                added_tier_names=announced_tier_names, joined_at=joined_at)
+                added_tier_names=announced_tier_names, joined_at=joined_at,
+                restored=take_restored(after.id, role.id))
             if ping_msg:
                 # A failed post shouldn't stop the other countries' posts, the email (if any) and the record update below
                 try:
