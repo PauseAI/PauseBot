@@ -16,11 +16,15 @@ That's the place to get involved in France. You're still very welcome here too!"
 # - "name": what posts and DMs call the country, when not the role name
 # - "msg": the country's own welcome DM, sent after the general one ({user} is the member's name)
 # - "noPing": post nothing in #onboarding-pipeline for it
+# - "email": a chapter address that MailerSend emails when someone gets the role
 OVERRIDES = {
     "United Kingdom": {"name": "UK"},
     "United States": {"name": "US"},
     # France is run by Pause IA on its own Discord, so new members are pointed there instead of pinging anyone
     "France": {"msg": FRANCE_DM, "noPing": True},
+    "Germany": {"email": "germany@pauseai.info"},
+    "Canada": {"email": "canada@pauseai.info"},
+    "India": {"email": "india@pauseai.info"},
 }
 
 ISO_CODES = {name: iso for countries in COUNTRIES.values() for name, iso in countries.items()}
@@ -33,7 +37,7 @@ def flag(iso):
 
 def info_for_name(role_name):
     """What onboarding needs for a country role with this name ({"name", "flag", "msg", and "noPing"
-    if set}), or None if the name isn't a country."""
+    and "email" if set}), or None if the name isn't a country."""
     iso = ISO_CODES.get(role_name)
     if iso is None:
         return None

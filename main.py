@@ -22,6 +22,7 @@ import modlog
 load_dotenv()
 
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
+MAILERSEND_API_KEY = os.getenv('MAILERSEND_API_KEY')
 WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')
 # Lets the onboarding dashboard read /stats/discord; kept apart from WEBHOOK_SECRET, which can grant roles
 STATS_SECRET = os.getenv('STATS_SECRET')
@@ -506,13 +507,39 @@ async def on_member_update(before, after):
                 info, role, tier_roles, after.id, after.mention, now=now,
                 added_tier_names=announced_tier_names, joined_at=joined_at)
             if ping_msg:
-                # A failed post shouldn't stop the other countries' posts and the record update below
+                # A failed post shouldn't stop the email and the record update below
                 try:
                     await channel.send(ping_msg)
                     if onboarder_ids:
                         onboarding_notification = True
                 except discord.HTTPException as e:
                     print(f"Error posting onboarding ping for {after.name} ({info['name']}): {e}")
+
+        # Email the chapter's address through MailerSend, for countries with an "email" (see countries.py)
+        target_email = info.get("email")
+        if target_email:
+            url = "https://api.mailersend.com/v1/email"
+            headers = {
+                "Authorization": f"Bearer {MAILERSEND_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "from": {"email": "info@pauseai.info", "name": "PauseAI Info"},
+                "to": [{"email": target_email, "name": f"{info['name']} Onboarder"}],
+                "subject": f"{after.name} has joined PauseAI Discord",
+                "text": f"A new user just joined the Discord server and received the {info['name']} role!\n\nUser: {after.name}",
+                "html": f"<strong>A new user just joined the Discord server and received the {info['name']} role!</strong><br><br>User: {after.name}"
+            }
+
+            try:
+                async with http_session.post(url, headers=headers, json=payload) as response:
+                    if response.status in (200, 202):
+                        print(f"Email sent successfully to {target_email}!")
+                    else:
+                        response_text = await response.text()
+                        print(f"Error from MailerSend for {target_email}: {response.status} - {response_text}")
+            except Exception as e:
+                print(f"Error sending email to {target_email}: {e}")
 
     # An existing member adding a country gets that country's own welcome now (new members get
     # theirs, with the general welcome, from send_delayed_welcome_dm)
@@ -526,7 +553,7 @@ async def on_member_update(before, after):
         except discord.HTTPException as e:
             print(f"Error sending country DM to {after.name}: {e}")
 
-    print(f"User {after.name} received country role(s)! Updating their record.")
+    print(f"User {after.name} received country role(s)! Updating their record and notifying coordinators.")
     await sync_member_record(after, onboarding_notification=onboarding_notification)
 
 async def save_record_safely(member):
@@ -1109,8 +1136,8 @@ async def prune_log_channel(now=None):
     return removed
 
 if __name__ == "__main__":
-    if not DISCORD_TOKEN or not DATABASE_URL:
-        print("Error: DISCORD_TOKEN or DATABASE_URL is not set in the environment.")
+    if not DISCORD_TOKEN or not MAILERSEND_API_KEY or not DATABASE_URL:
+        print("Error: DISCORD_TOKEN, MAILERSEND_API_KEY or DATABASE_URL is not set in the environment.")
     else:
         if not ONBOARDING_PIPELINE_CHANNEL_ID:
             print("Warning: ONBOARDING_PIPELINE_CHANNEL_ID is not set. The bot will not send messages in Discord.")

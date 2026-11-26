@@ -77,16 +77,24 @@ class Channel:
         self.posts.append(content)
 
 
+class Accepted:
+    status = 202
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
 class RecordingHTTP:
-    """Records outgoing HTTP calls, such as the MailerSend email, and then fails them."""
+    """Records outgoing HTTP posts, such as the MailerSend email, and accepts them."""
     def __init__(self):
-        self.calls = []
+        self.posts = []
 
-    def post(self, *args, **kwargs):
-        self.calls.append(args)
-        raise AssertionError(f"unexpected HTTP call: {args}")
-
-    get = post
+    def post(self, url, **kwargs):
+        self.posts.append((url, kwargs))
+        return Accepted()
 
 
 @pytest.fixture
@@ -144,12 +152,33 @@ async def test_france_posts_nothing_and_an_existing_member_gets_its_dm(bot):
     assert dm.startswith("Welcome to PauseAI in France 🇫🇷:\n\nBienvenue pat")
 
 
-async def test_no_email_is_sent_for_a_country_that_had_one(bot):
-    # Germany, Canada and India used to email their chapter through MailerSend
-    for name in ("Germany", "Canada", "India"):
+EMAILS = {"Germany": "germany@pauseai.info", "Canada": "canada@pauseai.info", "India": "india@pauseai.info"}
+
+
+def test_only_germany_canada_and_india_have_a_chapter_email():
+    assert {name: info["email"] for name in countries.ISO_CODES
+            if (info := countries.info_for_name(name)).get("email")} == EMAILS
+
+
+@pytest.mark.parametrize("name", EMAILS)
+async def test_germany_canada_and_india_still_email_their_chapter(bot, monkeypatch, name):
+    monkeypatch.setattr(main, "MAILERSEND_API_KEY", "key")
+    await gain(name, greeters=[7])
+    (url, request), = bot.http.posts
+    assert url == "https://api.mailersend.com/v1/email"
+    assert request["headers"]["Authorization"] == "Bearer key"
+    payload = request["json"]
+    assert payload["to"] == [{"email": EMAILS[name], "name": f"{name} Onboarder"}]
+    assert payload["subject"] == "pat has joined PauseAI Discord"
+    assert payload["text"] == (f"A new user just joined the Discord server and received the {name} role!"
+                               "\n\nUser: pat")
+    assert bot.channel.posts == [f"<@7> : <@99> has joined from {name}!"]
+
+
+async def test_other_countries_send_no_email(bot):
+    for name in ("Portugal", "United Kingdom", "France", "Spain"):
         await gain(name, greeters=[7])
-    assert bot.http.calls == []
-    assert len(bot.channel.posts) == 3
+    assert bot.http.posts == []
 
 
 async def test_the_delayed_welcome_includes_a_never_hard_coded_countrys_dm(monkeypatch):

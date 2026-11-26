@@ -58,6 +58,8 @@ services:
       # See the runbook for which to leave empty in a rehearsal.
       - key: DISCORD_TOKEN
         sync: false
+      - key: MAILERSEND_API_KEY
+        sync: false
       - key: WEBHOOK_SECRET
         sync: false
       - key: STATS_SECRET
