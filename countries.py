@@ -19,6 +19,7 @@ That's the place to get involved in France. You're still very welcome here too!"
 # - "msg": the country's own welcome DM, sent after the general one ({user} is the member's name)
 # - "noPing": post nothing in #onboarding-pipeline for it
 # - "email": a chapter address that MailerSend emails when someone gets the role
+# - "flag": the flag emoji, when the ISO code has none ("" for no flag)
 OVERRIDES = {
     "United Kingdom": {"name": "UK"},
     "United States": {"name": "US"},
@@ -27,6 +28,8 @@ OVERRIDES = {
     "Germany": {"email": "germany@pauseai.info"},
     "Canada": {"email": "canada@pauseai.info"},
     "India": {"email": "india@pauseai.info"},
+    # XK is a user-assigned code, so there's no flag emoji for it
+    "Kosovo": {"flag": ""},
 }
 
 ISO_CODES = {name: iso for countries in COUNTRIES.values() for name, iso in countries.items()}
@@ -52,5 +55,12 @@ def info(role):
 
 
 def infos(roles):
-    """(role, info) for each country role among roles, in order."""
-    return [(role, i) for role in roles if (i := info(role)) is not None]
+    """(role, info) for each country role among roles, in order. Only the first role with a given
+    name counts, so a duplicate role never doubles a ping, email or DM."""
+    seen, result = set(), []
+    for role in roles:
+        i = info(role)
+        if i is not None and role.name not in seen:
+            seen.add(role.name)
+            result.append((role, i))
+    return result

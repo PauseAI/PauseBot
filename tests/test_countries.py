@@ -42,10 +42,18 @@ def test_every_override_is_for_a_country_in_the_table():
     assert set(countries.OVERRIDES) <= set(countries.ISO_CODES)
 
 
-def test_every_country_in_the_table_has_a_two_letter_flag():
+def test_every_country_in_the_table_has_a_two_letter_flag_except_kosovo():
     for name, iso in countries.ISO_CODES.items():
         flag = countries.info_for_name(name)["flag"]
+        if name == "Kosovo":
+            assert flag == ""
+            continue
         assert len(flag) == 2 and all(0x1F1E6 <= ord(c) <= 0x1F1FF for c in flag), name
+
+
+def test_a_duplicate_country_role_counts_once():
+    first, second, other = NS(name="India"), NS(name="India"), NS(name="Kenya")
+    assert [(r, i["name"]) for r, i in countries.infos([first, other, second])] == [(first, "India"), (other, "Kenya")]
 
 
 # ── on_member_update, end to end ──────────────────────────────────────────────
@@ -173,6 +181,17 @@ async def test_germany_canada_and_india_still_email_their_chapter(bot, monkeypat
     assert payload["text"] == (f"A new user just joined the Discord server and received the {name} role!"
                                "\n\nUser: pat")
     assert bot.channel.posts == [f"<@7> : <@99> has joined from {name}!"]
+
+
+async def test_a_developer_mode_bot_sends_no_chapter_email(bot, monkeypatch):
+    # A test server's Germany role has the same name as production's
+    monkeypatch.setattr(main, "MAILERSEND_API_KEY", "key")
+    country = Role("Germany", [NS(id=7), NS(id=99)])
+    guild = NS(id=12345, roles=[country, Role("Chapter Greeter", [NS(id=7)])])
+    monkeypatch.setattr(main, "DEVELOPER_MODE", True)
+    await main.on_member_update(Member(guild, [], None), Member(guild, [country], None))
+    assert bot.channel.posts == ["<@7> : <@99> has joined from Germany!"]
+    assert bot.http.posts == []
 
 
 async def test_other_countries_send_no_email(bot):

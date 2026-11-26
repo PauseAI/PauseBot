@@ -179,10 +179,6 @@ def test_general_welcome_asks_to_join_once_without_microcommit():
     assert "MicroCommit" not in main.GENERAL_DM
 
 
-def test_every_country_has_a_flag():
-    assert all(info.get("flag") for info in ALL_COUNTRIES)
-
-
 def test_every_dm_fits_in_one_discord_message():
     longest_name = "x" * 32  # Discord usernames are at most 32 characters
     for info in [None, *ALL_COUNTRIES]:

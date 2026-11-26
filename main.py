@@ -516,8 +516,9 @@ async def on_member_update(before, after):
                     print(f"Error posting onboarding ping for {after.name} ({info['name']}): {e}")
 
         # Email the chapter's address through MailerSend, for countries with an "email" (see countries.py)
+        # Not from a developer-mode bot: test servers' roles have the same names, but the addresses are real
         target_email = info.get("email")
-        if target_email:
+        if target_email and not DEVELOPER_MODE:
             url = "https://api.mailersend.com/v1/email"
             headers = {
                 "Authorization": f"Bearer {MAILERSEND_API_KEY}",
