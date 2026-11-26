@@ -110,7 +110,7 @@ class Accepted:
 
 
 class RecordingHTTP:
-    """Records outgoing HTTP posts, such as the MailerSend email, and accepts them."""
+    """Records outgoing HTTP posts and accepts them, so a test can check none are made."""
     def __init__(self):
         self.posts = []
 
@@ -174,38 +174,25 @@ async def test_france_posts_nothing_and_an_existing_member_gets_its_dm(bot):
     assert dm.startswith("Welcome to PauseAI in France 🇫🇷:\n\nBienvenue pat")
 
 
-EMAILS = {"Germany": "germany@pauseai.info", "Canada": "canada@pauseai.info", "India": "india@pauseai.info"}
+def test_no_country_has_a_chapter_email():
+    # The MailerSend chapter emails are gone: the #onboarding-pipeline post covers them
+    assert [name for name in countries.ISO_CODES if "email" in countries.info_for_name(name)] == []
 
 
-def test_only_germany_canada_and_india_have_a_chapter_email():
-    assert {name: info["email"] for name in countries.ISO_CODES
-            if (info := countries.info_for_name(name)).get("email")} == EMAILS
-
-
-@pytest.mark.parametrize("name", EMAILS)
-async def test_germany_canada_and_india_still_email_their_chapter(bot, monkeypatch, name):
-    monkeypatch.setattr(main, "MAILERSEND_API_KEY", "key")
+@pytest.mark.parametrize("name", ("Germany", "Canada", "India"))
+async def test_germany_canada_and_india_ping_but_send_no_email(bot, name):
     await gain(name, greeters=[7])
-    (url, request), = bot.http.posts
-    assert url == "https://api.mailersend.com/v1/email"
-    assert request["headers"]["Authorization"] == "Bearer key"
-    payload = request["json"]
-    assert payload["to"] == [{"email": EMAILS[name], "name": f"{name} Onboarder"}]
-    assert payload["subject"] == "pat has joined PauseAI Discord"
-    assert payload["text"] == (f"A new user just joined the Discord server and received the {name} role!"
-                               "\n\nUser: pat")
-    assert bot.channel.posts == [f"<@7> : <@99> has joined from {name}!"]
-
-
-async def test_a_developer_mode_bot_sends_no_chapter_email(bot, monkeypatch):
-    # A test server's Germany role has the same name as production's
-    monkeypatch.setattr(main, "MAILERSEND_API_KEY", "key")
-    country = Role("Germany", [NS(id=7), NS(id=99)])
-    guild = NS(id=12345, roles=[country, Role("Chapter Greeter", [NS(id=7)])])
-    monkeypatch.setattr(main, "DEVELOPER_MODE", True)
-    await main.on_member_update(Member(guild, [], None), Member(guild, [country], None))
-    assert bot.channel.posts == ["<@7> : <@99> has joined from Germany!"]
     assert bot.http.posts == []
+    assert bot.channel.posts == [f"<@7> : <@99> has joined from {name}!"]
+    assert bot.synced == [True]
+
+
+@pytest.mark.parametrize("name", ("Germany", "Canada", "India"))
+async def test_germany_canada_and_india_with_nobody_to_ping_say_so_and_send_no_email(bot, name):
+    await gain(name)
+    assert bot.http.posts == []
+    assert bot.channel.posts == [f"<@99> has joined from {name}, but there's no Chapter Greeter "
+                                 f"or National Leader for {name} to ping."]
 
 
 async def test_other_countries_send_no_email(bot):

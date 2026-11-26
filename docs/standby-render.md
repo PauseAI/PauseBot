@@ -7,7 +7,7 @@ PauseBot runs on Railway. If Railway is down for long enough that PauseBot's abs
 - What's lost in a real failover: everything written since the last nightly backup, up to about a day. That's member records changed or added (joins, leaves, role changes), the message log and its edits, and server snapshots. Members who joined in that time are still in Discord; `/sync_recent` brings their records back.
 - Where the secrets are: Psono. Never commit a value, or paste one into a ticket or chat.
 
-**Never run two bots on the same token.** Both would answer every Discord event (double onboarding emails, double role changes) and both would run the daily jobs. A rehearsal uses no token or a dev bot's token, never production's. A real failover starts the Render bot only once the Railway one is down for good, or its token has been reset.
+**Never run two bots on the same token.** Both would answer every Discord event (double onboarding pings, double role changes) and both would run the daily jobs. A rehearsal uses no token or a dev bot's token, never production's. A real failover starts the Render bot only once the Railway one is down for good, or its token has been reset.
 
 ## Before you start
 
@@ -27,12 +27,11 @@ The rehearsal proves the standby works: that the Blueprint builds and starts, an
    | Variable | Rehearsal value |
    |---|---|
    | `DISCORD_TOKEN` | empty for now (step 4 says what to set) |
-   | `MAILERSEND_API_KEY` | `rehearsal` (the bot won't start without some value; emails then fail, which is what we want) |
    | `WEBHOOK_SECRET`, `STATS_SECRET` | a random value each, not production's: `openssl rand -hex 32` |
    | `DEVELOPER_MODE` | `true` |
    | everything else | empty |
 
-   With no token, `main.py` prints `Error: DISCORD_TOKEN, ... is not set`, exits without opening a port, and Render restarts it until the deploy fails its port or health check. That's expected, and it means the bot creates no tables before the restore.
+   With no token, `main.py` prints `Error: DISCORD_TOKEN or DATABASE_URL is not set in the environment.`, exits without opening a port, and Render restarts it until the deploy fails its port or health check. That's expected, and it means the bot creates no tables before the restore.
 
 2. **Restore the newest dump.**
    1. In the Dashboard, open `pausebot-db` > Networking and add your own IP to the allow list. Copy the **External Database URL** from Connect and keep it in a variable for the next steps (it holds the password, so start the line with a space to keep it out of shell history, if your shell is set up for that): `export RENDER_EXTERNAL_URL='<External Database URL>'`.
@@ -75,7 +74,7 @@ The rehearsal proves the standby works: that the Blueprint builds and starts, an
 
 Only when Railway is down, or PauseBot on Railway can't run, and it isn't coming back soon. Steps 1 and 2 are the rehearsal's, with these differences.
 
-1. **Create from the Blueprint** as in the rehearsal's step 1, with the paid plans as the file has them. Leave `DISCORD_TOKEN` empty for now. Fill in the rest from Psono, with the values Railway's `PauseBot` service had: `MAILERSEND_API_KEY` (or whatever replaced it after MailerSend closes on 11 December 2026), `WEBHOOK_SECRET` and `STATS_SECRET` (the same values, so CiviCRM and the onboarding dashboard need only the new URL), `CIVICRM_URL`, `CIVICRM_API_KEY`, `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`, `MESSAGE_LOG_CHANNEL_ID`, `MESSAGE_LOG_IGNORE_IDS`. Leave `DEVELOPER_MODE` empty. Set every one Railway has: without `CF_ACCESS_*` the CRM calls are refused and members never link, and with `MESSAGE_LOG_CHANNEL_ID` but no `MESSAGE_LOG_IGNORE_IDS`, edits in staff channels get posted to #logs.
+1. **Create from the Blueprint** as in the rehearsal's step 1, with the paid plans as the file has them. Leave `DISCORD_TOKEN` empty for now. Fill in the rest from Psono, with the values Railway's `PauseBot` service had: `WEBHOOK_SECRET` and `STATS_SECRET` (the same values, so CiviCRM and the onboarding dashboard need only the new URL), `CIVICRM_URL`, `CIVICRM_API_KEY`, `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`, `MESSAGE_LOG_CHANNEL_ID`, `MESSAGE_LOG_IGNORE_IDS`. Leave `DEVELOPER_MODE` empty. Set every one Railway has: without `CF_ACCESS_*` the CRM calls are refused and members never link, and with `MESSAGE_LOG_CHANNEL_ID` but no `MESSAGE_LOG_IGNORE_IDS`, edits in staff channels get posted to #logs.
 
 2. **Restore the newest dump** as in the rehearsal's step 2, and **check the row counts** (step 3): `discord_members` should be close to the PauseAI server's member count (Server Settings > Members), and the newest `server_snapshots` row should be from the day or two before the dump. Note the dump's time: everything after it is lost.
 

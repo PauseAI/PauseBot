@@ -1,11 +1,10 @@
 # PauseBot
 
-PauseBot is a Discord bot designed to streamline the onboarding pipeline for PauseAI. It listens for new members joining the server and, once they pick a country role, pings that country's Chapter Greeters (or failing that its National Leaders) in #onboarding-pipeline, sends the member their welcome DMs, and for a few countries emails the chapter through the MailerSend API. It also records each member in its Postgres database and links them to their member record in CiviCRM.
+PauseBot is a Discord bot designed to streamline the onboarding pipeline for PauseAI. It listens for new members joining the server and, once they pick a country role, pings that country's Chapter Greeters (or failing that its National Leaders) in #onboarding-pipeline and sends the member their welcome DMs. It also records each member in its Postgres database and links them to their member record in CiviCRM.
 
 ## Features
 
-- **Chapter Emails**: When a member gets the Germany, Canada or India role, MailerSend emails that chapter's address (set in `countries.py`).
-- **Onboarding Pings and Welcome DMs**: When a member gets a country role, the bot posts in #onboarding-pipeline, pinging the country's Chapter Greeters, or failing that its National Leaders (both found by role). When there's nobody to ping, the post says so for a new member and is skipped for an existing member adding a country or a country given back from saved roles on rejoining, so the many countries without onboarders don't fill the channel. A few minutes after joining, new members get a welcome DM, plus a country's own DM where it has one. A country role is any role whose name is a country in `jobs/country_regions_table.py`, so a new chapter's role works as soon as it exists; other roles (such as California) are ignored. Renaming a country role away from its table name turns its onboarding off, and a new role named after a country (a US state called Georgia, say) would be treated as that country. `countries.py` holds the few exceptions: the UK and US are called that in posts, France (run by Pause IA on its own server) sends its own DM and pings nobody, and Germany, Canada and India email their chapter's address.
+- **Onboarding Pings and Welcome DMs**: When a member gets a country role, the bot posts in #onboarding-pipeline, pinging the country's Chapter Greeters, or failing that its National Leaders (both found by role). When there's nobody to ping, the post says so for a new member and is skipped for an existing member adding a country or a country given back from saved roles on rejoining, so the many countries without onboarders don't fill the channel. A few minutes after joining, new members get a welcome DM, plus a country's own DM where it has one. A country role is any role whose name is a country in `jobs/country_regions_table.py`, so a new chapter's role works as soon as it exists; other roles (such as California) are ignored. Renaming a country role away from its table name turns its onboarding off, and a new role named after a country (a US state called Georgia, say) would be treated as that country. `countries.py` holds the few exceptions: the UK and US are called that in posts and France (run by Pause IA on its own server) sends its own DM and pings nobody.
 - **Country Finder**: Members pick their country roles at any time, including the countries Discord onboarding has no room for. See [Country finder](#country-finder).
 - **Member Records**: Keeps each member's details (Discord ID, username, nick, global name, join and leave dates, and roles) in Postgres. When someone rejoins, the roles they had are given back (except any that `is_role_safe_to_grant` refuses). Saved roles are only given back on joining (on join, the startup sync of the last 10 minutes' joins, and `/sync_recent`), and a dropped role is saved straight away, so a role someone dropped stays dropped. Someone who rejoins while the bot is down for longer than 10 minutes gets their roles back with `/sync_recent minutes:<since then>`.
 - **CiviCRM Linking**: Asks CiviCRM to link each member to their member record by Discord username, on join, and in an hourly sweep (also run at startup) that sends everyone in the server not linked yet in batches of 500.
@@ -23,8 +22,8 @@ Discord onboarding allows 4 questions and 12 answers per multiple-choice questio
 - **The posts**: in each of the five other-<region> channels (other-europe, other-americas, other-africa, other-middle-east, other-asia-pacific), which is where onboarding's "Somewhere else in <region>" answer sends people, an admin runs `/country_finder_post`. It needs Manage Server. The bot posts that region's countries in one or two dropdowns (Discord allows 25 per dropdown, so Europe, the Americas, Africa and Asia-Pacific are split alphabetically) and pins the post. It works out the region from the channel's name; elsewhere, pass `region:`, or leave it out to post a button per region instead. The dropdowns keep working after restarts and redeploys, since the bot answers them by ID rather than remembering the message. Each pick redraws the post from the server's current roles, so a country role made later shows up after the next pick. To replace a post, post again and delete the old one.
 - **Picking**: everyone sees the same post, so picking there only adds countries, and the post is redrawn so it doesn't stay ticked for them. The bot answers with a message only that member sees: their own copy of the region's dropdowns, with their countries ticked. In that copy, ticking a country gives its role and points to its channel, and unticking takes the role away. Members can hold more than one country, as with onboarding.
 - **`/country`**: privately, a button per region, each opening the member's own copy of that region's dropdowns. `/country name:<country>` (with autocomplete, which also knows each country's own name, e.g. "Deutschland") gives that one country straight away.
-- **Safety**: it only gives or takes roles named in the table, and only those that pass `is_role_safe_to_grant` and sit below the bot's own role. A member can add or remove 10 countries in 10 minutes, since each new country can ping its greeters (and, for Germany, Canada and India, email the chapter); past that it asks them to wait. Each role is changed on its own, so if one fails the reply says which, and the rest stand.
-- **Onboarding pings**: a country given by the finder is handled like one picked in onboarding: the onboarding ping, chapter email and country DMs come from `on_member_update` as before.
+- **Safety**: it only gives or takes roles named in the table, and only those that pass `is_role_safe_to_grant` and sit below the bot's own role. A member can add or remove 10 countries in 10 minutes, since each new country can ping its greeters; past that it asks them to wait. Each role is changed on its own, so if one fails the reply says which, and the rest stand.
+- **Onboarding pings**: a country given by the finder is handled like one picked in onboarding: the onboarding ping and country DMs come from `on_member_update` as before.
 
 The bot can already send in the other- channels. To pin, it needs **Pin Messages** there (or Manage Messages, which is more than it needs). Give the PauseBot role Pin Messages on the five regional categories, which keeps the channels synced to them, or pin the posts by hand.
 
@@ -32,7 +31,6 @@ The bot can already send in the other- channels. To pin, it needs **Pin Messages
 
 - Python 3.8+
 - A Discord Bot Token
-- A MailerSend API Key
 - A PostgreSQL database
 - A CiviCRM API key for the bot's account (optional; without it, members aren't linked to CiviCRM)
 
@@ -67,7 +65,6 @@ The bot can already send in the other- channels. To pin, it needs **Pin Messages
 
    Edit `.env` and configure the following variables:
    - `DISCORD_TOKEN`: Your Discord bot token.
-   - `MAILERSEND_API_KEY`: Your MailerSend API Key.
    - `CIVICRM_URL`, `CIVICRM_API_KEY`: CiviCRM's address and the bot's API key, for linking members.
    - `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`: the bot's Cloudflare Access service token, which the CRM API needs once it sits behind Cloudflare Access. With both set, every CiviCRM call sends them as `CF-Access-Client-Id` and `CF-Access-Client-Secret`, only when `CIVICRM_URL` is `https://crm.pauseai.info`; with either unset it sends neither. CiviCRM calls never follow a redirect: a 3xx fails the call.
    - `WEBHOOK_SECRET`: A secret string of your choosing. Required if using the webhooks for assigning roles.
@@ -79,7 +76,7 @@ The bot can already send in the other- channels. To pin, it needs **Pin Messages
 
 5. **Configure Roles and Channels (in `main.py`):**
    - Update `ONBOARDING_PIPELINE_CHANNEL_ID` with the channel ID where the bot should log its actions.
-   - Update the `COUNTRY_ROLES` dictionary with the Discord Role IDs and their corresponding coordinator email addresses.
+   - Country roles are found by name from `jobs/country_regions_table.py`; the few exceptions are in `countries.py`.
 
 ## Running the Bot
 
@@ -100,7 +97,7 @@ TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/pausebot_test py
 
 ## Deployment
 
-This bot is designed to be easily deployed to containerized environments or platforms like Railway or Heroku. Make sure to define your environment variables (`DISCORD_TOKEN`, `MAILERSEND_API_KEY`, etc.) in your deployment platform's dashboard.
+This bot is designed to be easily deployed to containerized environments or platforms like Railway or Heroku. Make sure to define your environment variables (`DISCORD_TOKEN`, `DATABASE_URL`, etc.) in your deployment platform's dashboard.
 
 The message log needs the **Message Content** privileged intent, enabled under Bot in the Discord Developer Portal.
 
@@ -121,8 +118,8 @@ The bot and Postgres are in US West (California). A move to EU West is planned (
 - **Region and replicas**: US West (California), 1 replica, not serverless. Run one replica only: two would both answer Discord events and both run the scheduled jobs. Teardown (deploy overlap and draining) is off.
 - **Volumes**: none. The bot keeps nothing on disk; its data is in Postgres.
 - **Scheduled work**: none on Railway (no cron). The daily server snapshot and prune is a `discord.ext.tasks` loop inside the bot (`daily_snapshot_and_prune`). It runs at startup and then every 24 hours, so its time of day is set by the last restart (around 18:48 UTC as of November 2026). The same loop deletes the bot's log channel posts whose oldest quoted message was sent over 30 days ago. The startup run skips a server already snapshotted in the last 20 hours, so a restart within 20 hours of the last snapshot can leave a gap of up to about 44 hours. The CiviCRM link sweep is another in-process loop, hourly.
-- **Variables**: `DATABASE_URL` is a reference, `${{Postgres.DATABASE_URL}}`. Set as values: `DISCORD_TOKEN`, `MAILERSEND_API_KEY`, `PORT` (8080), `WEBHOOK_SECRET`, `STATS_SECRET`, `CIVICRM_URL` and `CIVICRM_API_KEY` (without either of the last two, the bot starts but quietly never links members to CiviCRM). Also set, since this list was first read: `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`, `MESSAGE_LOG_CHANNEL_ID` and `MESSAGE_LOG_IGNORE_IDS` (checked 24 November 2026). `DEVELOPER_MODE` is not set, which means off; leave it unset in production.
-- `MAILERSEND_API_KEY` has to be replaced before MailerSend closes on 11 December 2026 (infrastructure plan 4.3/4.6).
+- **Variables**: `DATABASE_URL` is a reference, `${{Postgres.DATABASE_URL}}`. Set as values: `DISCORD_TOKEN`, `PORT` (8080), `WEBHOOK_SECRET`, `STATS_SECRET`, `CIVICRM_URL` and `CIVICRM_API_KEY` (without either of the last two, the bot starts but quietly never links members to CiviCRM). Also set, since this list was first read: `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`, `MESSAGE_LOG_CHANNEL_ID` and `MESSAGE_LOG_IGNORE_IDS` (checked 24 November 2026). `DEVELOPER_MODE` is not set, which means off; leave it unset in production.
+- `MAILERSEND_API_KEY` is also set, but the bot no longer reads it, so it can be deleted.
 
 **Postgres**: US West (California), with the volume `postgres-volume`.
 
