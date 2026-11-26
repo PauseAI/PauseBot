@@ -108,6 +108,9 @@ COUNTRY_DATA = {
     1256260218162122843: {"name": "Kenya", "flag": "🇰🇪", "msg": "", "email": None},
     1188719747282518130: {"name": "Israel", "flag": "🇮🇱", "msg": "", "email": None},
     1188719975796584479: {"name": "South Korea", "flag": "🇰🇷", "msg": "", "email": None},
+    1188720152716529694: {"name": "India", "flag": "🇮🇳", "msg": "", "email": "india@pauseai.info"},
+    1188719775216566323: {"name": "Japan", "flag": "🇯🇵", "msg": "", "email": None},
+    1188720277585145867: {"name": "Philippines", "flag": "🇵🇭", "msg": "", "email": None},
 }
 
 intents = discord.Intents.default()

@@ -116,6 +116,23 @@ def test_france_posts_nothing_and_sends_bilingual_dm():
     assert dm.count("https://discord.gg/vyXGd7AeGc") == 2
 
 
+
+def test_india_japan_and_philippines_get_onboarding():
+    india = main.COUNTRY_DATA[1188720152716529694]
+    assert india["name"] == "India"
+    # MailerSend notifies the chapter's group address, as for Germany and Canada
+    assert india["email"] == "india@pauseai.info"
+    msg, ids = ping(india, role(member_ids=[BOB, NEWBIE]), [None, role(member_ids=[BOB])])
+    assert ids == [BOB]
+    assert msg == "<@2> : <@99> has joined from India!"
+    # No greeter or lead yet: the post says so, pings nobody, and no email is sent
+    for role_id, name in ((1188719775216566323, "Japan"), (1188720277585145867, "Philippines")):
+        info = main.COUNTRY_DATA[role_id]
+        assert info["name"] == name and info["email"] is None
+        msg, ids = ping(info, role(member_ids=[NEWBIE]), [None, None])
+        assert ids == []
+        assert f"no Chapter Greeter or National Leader for {name}" in msg
+
 UK = main.COUNTRY_DATA[1188719374941560925]
 US = main.COUNTRY_DATA[1188717849980702781]
 GERMANY = main.COUNTRY_DATA[1188719399117541396]
